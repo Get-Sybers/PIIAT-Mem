@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+*.egg-info/
+build/
+dist/
+.venv/
+.pytest_cache/
+# analysis output
+out/
+*.jsonl
+timeline.csv
+timeline.json
+# ISF symbol caches
+piiat-symbols-*/

@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "piiat-mem"
+version = "0.1.0"
+description = "Put It In A Timeline (Memory) — a memory image to a Volatility 3 timeline (CSV/JSON), with DFIR plugins and a hardened container."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Get-Sybers" }]
+keywords = ["dfir", "forensics", "volatility", "memory", "timeline", "incident-response"]
+
+# Runtime needs only the standard library + Docker (the default backend runs the
+# hardened container). Installing Volatility 3 enables --native.
+dependencies = []
+
+[project.optional-dependencies]
+native = ["volatility3>=2.4"]
+
+[project.scripts]
+piiat-mem = "piiat_mem.cli:main"
+
+[tool.setuptools]
+packages = ["piiat_mem"]
+# ship the runtime assets so an installed copy can still find them
+[tool.setuptools.package-data]
+"*" = ["../plugins/*.py", "../jsonl_dfir_renderer.py"]
