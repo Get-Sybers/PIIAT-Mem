@@ -43,12 +43,14 @@ TIMELINE_PLUGINS = [
     "windows.netstat",                # kernel-walk flow source (second view)
     "windows.piiat.sessions",         # token LUID logons (real CAR login_id)
     "windows.piiat.registry",         # registry key last-write times
+    "windows.mftscan.MFTScan",        # NTFS times from memory-resident $MFT (file create events)
 ]
 # Plugins with no per-record time — still dumped for completeness (not timelined).
 # banners.Banners is format-agnostic (works with no symbols) and, like
 # windows.info, becomes image-context metadata in the CAR store.
 CONTEXT_PLUGINS = ["banners.Banners", "windows.info", "windows.svcscan",
-                   "windows.filescan", "windows.piiat.files", "windows.modules"]
+                   "windows.filescan", "windows.piiat.files",
+                   "windows.piiat.access", "windows.modules"]
 # The full set this tool runs by default; exported (and surfaced by
 # ``piiat-mem --list-plugins``) so a consumer can name the plugins it wants.
 ALL_PLUGINS = TIMELINE_PLUGINS + CONTEXT_PLUGINS

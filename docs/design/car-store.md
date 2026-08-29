@@ -180,3 +180,22 @@ Files now HAVE owners (handle enumeration — one CAR file event per
 rows). `user_session` identity is the token AuthenticationId **LUID** (the real
 CAR `login_id`); process `user`/`sid` come natively from the token. Registry
 `user` on SID-form hives resolves through the image's own ProfileList mapping.
+
+**Completeness (v0.4.0+):** a 10-agent per-object field audit drove every
+provably-fillable CAR property to filled — host identity (hostname/fqdn from the
+image's own registry, l2t-processor convention), process cwd / integrity_level /
+env_vars, thread start_function (export resolution), registry new_content, file
+extension, service paths for stopped services, spoke ppid inheritance. Two
+capabilities the audit surfaced were added: **`windows.piiat.access`**
+(Process-type handles → CAR process `access` events with access_level /
+target_*), and **`windows.mftscan.MFTScan`** integration (memory-resident $MFT →
+file `create` events with creation_time and, on an SI/FILE_NAME birth-time
+mismatch, previous_creation_time — the timestomp tell). Remaining nulls are
+honest: hashes/signers (unmapped file bytes), call_trace (ephemeral), thread
+src_pid (not recorded), flow byte counters (not in a snapshot).
+
+**Export dedup:** not needed. Enrichment's `_dedupe` (identity + action +
+target_guid + access_level) plus timestamp-gating leaves the exported timeline
+duplicate-free — measured 0 exact-duplicate rows on a real ~45k-event timeline;
+cross-source file evidence (filescan / piiat.files / mftscan) is intentionally
+distinct and only the timestamped MFT records reach the timeline.

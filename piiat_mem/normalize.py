@@ -74,6 +74,12 @@ def _resolve(src, rec):
             return None
         e = ntpath.splitext(ntpath.basename(str(v)))[1].lstrip(".").lower()
         return e or None
+    if kind == "proc_guid":
+        v = _resolve(src[1], rec)
+        try:
+            return f"proc-{int(v):x}" if v is not None else None
+        except (TypeError, ValueError):
+            return None
     if kind == "exe_path":
         v = _resolve(src[1], rec)
         if _blank(v):
@@ -90,10 +96,16 @@ def _resolve(src, rec):
 
 
 def _guid(spec, obj, rec):
-    """Synthesize the object's CAR guid: a field the plugin already carries, or
-    `<object>-<identity fields>` from its natural identity. Only a MISSING (None)
-    component voids the guid — "" is a legitimate identity value (e.g. a registry
-    key's default value has ValueName "")."""
+    """Synthesize the object's CAR guid: a field the plugin already carries, a
+    resolved marker (e.g. proc_guid of an offset), `<object>-<identity fields>`
+    from its natural identity, or None-for-now ({"none": True} — assigned by a
+    later merge stage). Only a MISSING (None) component voids a fields-guid —
+    "" is a legitimate identity value (e.g. a registry key's default value has
+    ValueName "")."""
+    if spec.get("none"):
+        return None
+    if "marker" in spec:
+        return _resolve(spec["marker"], rec)
     if "field" in spec:
         return rec.get(spec["field"])
     parts = [rec.get(f) for f in spec["fields"]]

@@ -79,7 +79,10 @@ def _dedupe(events: list[dict]) -> list[dict]:
     best: dict[tuple, dict] = {}
     order: list[tuple] = []
     for ev in events:
-        k = (ev.get("source_image"), ev["car_object"], ev.get("guid"), ev.get("car_action"))
+        # target_guid/access_level distinguish a process's several ACCESS events
+        # (same initiator guid + action); both are None on every other event.
+        k = (ev.get("source_image"), ev["car_object"], ev.get("guid"),
+             ev.get("car_action"), ev.get("target_guid"), ev.get("access_level"))
         if ev.get("guid") is None:
             k = k + (id(ev),)  # no identity -> never collapse
         if k not in best:
@@ -142,6 +145,44 @@ def _fill_user_from_sid_hive(ev: dict, sid_users: dict):
         u = sid_users.get((ev.get("source_image"), m.group(1).upper()))
         if u:
             ev["user"] = u
+
+
+def _collapse_mft(events: list[dict]) -> list[dict]:
+    """Merge windows.mftscan.MFTScan's per-ATTRIBUTE rows into one CAR file
+    `create` event per MFT record: STANDARD_INFORMATION carries the times (no
+    name), FILE_NAME carries the name (longest wins — the non-8.3 form) and its
+    OWN birth time. creation_time = the SI birth time; where the FILE_NAME
+    birth time differs it fills previous_creation_time — the classic timestomp
+    tell (the DATA is recorded; the verdict stays with the analyst).
+    guid = file-mft-<record number>."""
+    keep, by_rec = [], {}
+    for ev in events:
+        if ev.get("source_plugin") != "windows.mftscan.MFTScan":
+            keep.append(ev)
+            continue
+        nat = ev.get("_native") or {}
+        rec_no = nat.get("Record Number")
+        if rec_no is None:
+            continue
+        by_rec.setdefault((ev.get("source_image"), rec_no), []).append(ev)
+    for (image, rec_no), rows in by_rec.items():
+        si = [r for r in rows if (r.get("_native") or {}).get("Attribute Type") == "STANDARD_INFORMATION"]
+        fn = [r for r in rows if "FILE_NAME" in str((r.get("_native") or {}).get("Attribute Type"))]
+        named = [r for r in fn if r.get("file_name")]
+        name_row = max(named, key=lambda r: len(str(r["file_name"]))) if named else None
+        base = (si[0] if si else (name_row or rows[0])).copy()
+        base["guid"] = f"file-mft-{rec_no}"
+        if name_row is not None:
+            base["file_name"] = name_row["file_name"]
+            base["extension"] = name_row.get("extension")
+        si_created = si[0].get("creation_time") if si else None
+        fn_created = name_row.get("creation_time") if name_row else None
+        base["creation_time"] = si_created or fn_created
+        base["timestamp"] = base["creation_time"]
+        if si_created and fn_created and si_created != fn_created:
+            base["previous_creation_time"] = fn_created
+        keep.append(base)
+    return keep
 
 
 def _host_identity(events: list[dict]) -> dict:
@@ -233,6 +274,7 @@ def _inherit(ev: dict, proc: dict, obj_fields: set):
 def enrich(events: list[dict]) -> list[dict]:
     """Dedupe, link, inherit. Returns the final event list for the store."""
     model = carmodel.load()
+    events = _collapse_mft(events)
     events, user_by_pid = _collapse_sessions(events)
     events = _dedupe(events)
     procs = _process_index(events)
@@ -263,6 +305,19 @@ def enrich(events: list[dict]) -> list[dict]:
 
         if ev["car_object"] == "registry":
             _fill_user_from_sid_hive(ev, sid_users)
+            continue
+
+        if ev["car_object"] == "process" and ev.get("car_action") == "access":
+            # An access EVENT rides the process object: guid is already the
+            # INITIATOR's process guid; inherit the initiator's context the
+            # spoke way (definitive via its own offset).
+            owner = None
+            if ev.get("owning_offset") is not None:
+                owner = procs_by_offset.get((image, int(ev["owning_offset"])))
+            if owner is not None:
+                ev["owning_guid"] = owner.get("guid")
+                ev["link_confidence"] = "definitive"
+                _inherit(ev, owner, obj_fields)
             continue
 
         if ev["car_object"] == "process":

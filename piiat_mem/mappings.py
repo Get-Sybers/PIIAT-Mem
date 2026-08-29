@@ -71,6 +71,12 @@ def family(field):
     return ("family", field)
 
 
+def proc_guid(field):
+    """A process guid synthesized from an _EPROCESS offset field
+    (proc-<hex>) — the same convention windows.piiat.processes emits."""
+    return ("proc_guid", field)
+
+
 # --- variant predicates (referenced by name from `variants`) -----------------
 
 def is_bound_socket(rec) -> bool:
@@ -152,8 +158,42 @@ MAPPINGS = {
             # completeness pass: PEB CurrentDirectory + token mandatory label
             "current_working_directory": "Cwd",
             "integrity_level": "IntegrityLevel",
+            "env_vars": "EnvVars",
         },
         "keep": ["Offset", "ImageFileName", "LoadedDlls", "DllCount", "Hidden", "LogonId"],
+    },
+    # ---- process ACCESS events — an open Process-type handle IS an observed
+    # "A holds access to B" fact (CAR process:access). guid = the INITIATING
+    # process's guid per CAR; the event is distinguished from the create event
+    # by its action, and from other access events by target_guid/access_level
+    # (the dedupe key includes both). No timestamp -> store-only.
+    "windows.piiat.access": {
+        "object": "process", "action": "access", "ts": None,
+        "guid": {"marker": proc_guid("OwnerOffset")},
+        "owning_pid": "PID", "owning_offset": "OwnerOffset",
+        "props": {
+            "pid": "PID", "exe": "ProcessName",
+            "access_level": "GrantedAccess",
+            "target_pid": "TargetPid", "target_name": "TargetName",
+            "target_guid": proc_guid("TargetOffset"),
+        },
+        "keep": ["HandleValue"],
+    },
+    # ---- MFT records — memory-resident $MFT pages carry the NTFS times the
+    # FILE_OBJECT lacks. Raw rows are per-attribute (SI = times, no name;
+    # FILE_NAME = name + its own times); enrichment merges them per record into
+    # one file `create` event with creation_time (SI) and, where the FILE_NAME
+    # attribute's birth time differs, previous_creation_time (the timestomp
+    # tell — the DATA is recorded, the verdict is the analyst's).
+    "windows.mftscan.MFTScan": {
+        "object": "file", "action": "create", "ts": "Created",
+        "guid": {"none": True}, "owning_pid": None,    # guid assigned at merge
+        "props": {
+            "file_name": "Filename", "creation_time": "Created",
+            "extension": ext("Filename"),
+        },
+        "keep": ["Record Number", "Attribute Type", "MFT Type", "Modified",
+                 "Updated", "Accessed", "Offset", "Permissions"],
     },
     # ---- the piiat.* family (v0.4.0): every spoke emits OwnerOffset — the
     # owning _EPROCESS address — so enrichment links DEFINITIVELY, not by PID.
@@ -169,10 +209,12 @@ MAPPINGS = {
             "start_address": "Win32StartAddress",
             "start_module": "Win32StartPath",
             "start_module_name": basename("Win32StartPath"),
+            # the resolved export at the user-mode start (pairs with start_module)
+            "start_function": "Win32StartFunction",
             "stack_base": "StackBase", "stack_limit": "StackLimit",
             "user_stack_base": "UserStackBase", "user_stack_limit": "UserStackLimit",
         },
-        "keep": ["ExitTime", "StartAddress", "StartPath"],
+        "keep": ["ExitTime", "StartAddress", "StartPath", "StartFunction"],
     },
     "windows.piiat.modules": {
         "object": "module", "action": "load", "ts": "LoadTime",

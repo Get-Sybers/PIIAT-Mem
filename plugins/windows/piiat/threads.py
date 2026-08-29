@@ -23,6 +23,20 @@ CarThread wants and thrdscan does not give together:
   Win32StartAddress  the user-mode entry point
   Win32StartPath     the mapped module holding Win32StartAddress — an injected
                      thread shows an unbacked / wrong-module start here
+  StartFunction, Win32StartFunction  (CAR thread.start_function) the resolved
+                     EXPORT name at the start address — exact-match exports as
+                     the bare name (RtlUserThreadStart), otherwise the nearest
+                     PRECEDING export in standard displacement notation
+                     (TppWorkerThread+0x20) — parsed from the module's
+                     in-memory export table (PESymbols.get_pefile_obj +
+                     pefile), the same table PESymbols' ExportSymbolFinder
+                     reads. PESymbols.find_symbols itself is NOT called: its
+                     PDB lane raises an uncaught OSError on a read-only symbol
+                     cache (pdbutil os.makedirs) BEFORE its export lane runs,
+                     which would poison every lookup in the sealed container.
+                     An unbacked Win32 start with NO symbol is the injection
+                     signal, so nothing is ever guessed: unbacked address or
+                     no readable export table -> NotAvailableValue
   StackBase,  StackLimit       the KERNEL stack bounds (from the KTHREAD/Tcb)
   UserStackBase, UserStackLimit  the USER stack bounds (TEB.NtTib), read through
                      the owning process's address space
@@ -38,13 +52,18 @@ whose process is dead get NotAvailableValue there but are still listed.
 Rendered by the jsonl_dfir renderer -> memory.VolatilityJson (Plugin =
 "windows.piiat.threads") -> CarThread reads Record.OwnerOffset/TID/…
 """
+import bisect
 import datetime
+
+import pefile
 
 from volatility3.framework import constants, interfaces, renderers
 from volatility3.framework.configuration import requirements
 from volatility3.framework.constants import windows as windows_constants
 from volatility3.framework.layers import intel
+from volatility3.framework.symbols import intermed
 from volatility3.framework.symbols.windows import versions
+from volatility3.framework.symbols.windows.extensions import pe as pe_extensions
 from volatility3.plugins.windows import pe_symbols, psscan, thrdscan
 
 
@@ -125,6 +144,108 @@ class Threads(interfaces.plugins.PluginInterface):
         except Exception:  # pylint: disable=broad-except
             return int(proc.vol.offset)
 
+    def _module_exports(self, path, layer_name, module_start, caches):
+        """The module's export table as ([sorted export RVAs], {rva: name}),
+        parsed with PESymbols.get_pefile_obj + pefile from this process's
+        mapping of the module (exactly the table PESymbols'
+        _get_exported_symbols reads); None when the PE headers or export
+        directory are unreadable. Forwarded and ordinal-only exports carry no
+        code / no name at their RVA, so they are skipped.
+
+        Cached by FULL module path (export RVAs are base-independent, so one
+        parse serves every process) — NOT by basename the way PESymbols'
+        get_process_modules collects modules: on WOW64 the 32-bit
+        \\Windows\\SysWOW64\\ntdll.dll and the 64-bit \\Windows\\System32\\
+        ntdll.dll share a basename but not an export layout, and a
+        basename-keyed cache resolves half the threads against the wrong
+        bitness's table. A failed parse is retried from other processes'
+        layers (the mapping may be paged out here but resident elsewhere).
+        """
+        exports_cache, failed_layers, _symbol_cache = caches
+        key = path.lower()
+        if key in exports_cache:
+            return exports_cache[key]
+        if (key, layer_name) in failed_layers:
+            return None
+        result = None
+        try:
+            if self._pe_table_name is None:
+                self._pe_table_name = intermed.IntermediateSymbolTable.create(
+                    self.context, self.config_path, "windows", "pe",
+                    class_types=pe_extensions.class_types)
+            pe_module = pe_symbols.PESymbols.get_pefile_obj(
+                self.context, self._pe_table_name, layer_name, module_start)
+            if pe_module:
+                pe_module.parse_data_directories(
+                    directories=[pefile.DIRECTORY_ENTRY[
+                        "IMAGE_DIRECTORY_ENTRY_EXPORT"]])
+                if hasattr(pe_module, "DIRECTORY_ENTRY_EXPORT"):
+                    rva_to_name = {}
+                    for export in pe_module.DIRECTORY_ENTRY_EXPORT.symbols:
+                        try:
+                            if export.forwarder is not None:
+                                continue
+                            name = export.name.decode("ascii")
+                        except (AttributeError, UnicodeDecodeError):
+                            continue  # ordinal-only / garbled export
+                        if name and export.address:
+                            # aliased exports: keep the first name, like
+                            # ExportSymbolFinder's first-match walk
+                            rva_to_name.setdefault(int(export.address), name)
+                    if rva_to_name:
+                        result = (sorted(rva_to_name), rva_to_name)
+        except Exception:  # pylint: disable=broad-except
+            result = None
+        if result is not None:
+            exports_cache[key] = result
+        else:
+            failed_layers.add((key, layer_name))
+        return result
+
+    def _path_and_symbol(self, vads, address, proc_layer_name, caches):
+        """(module path, export name) for a thread start address: the VAD file
+        path exactly as before, plus the export name resolved against that
+        module's in-memory export table — the bare name on an exact match,
+        `Name+0x<disp>` for the nearest PRECEDING export otherwise (standard
+        symbol+displacement notation: a fact about the table, not a guess).
+        (None, None) for an unbacked address; (path, None) when the module has
+        no readable export table or no export at/before the address.
+
+        NOT routed through PESymbols.find_symbols: its PDB lane hits an
+        uncaught OSError (pdbutil makedirs on a read-only symbol cache) before
+        its export lane ever runs, which would silently null every symbol.
+
+        caches = (exports_cache, failed_layers, symbol_cache); symbol_cache
+        maps (path, rva) -> name so each distinct start RVA resolves once.
+        """
+        _exports_cache, _failed_layers, symbol_cache = caches
+        try:
+            vad_info = pe_symbols.PESymbols.range_info_for_address(vads, address)
+            if not vad_info:
+                return None, None
+            vad_start, _vad_size, path = vad_info
+            rva = address - vad_start
+            key = (path.lower(), rva)
+            if key in symbol_cache:
+                return path, symbol_cache[key]
+            if proc_layer_name is None:
+                return path, None  # no address space to parse the PE from
+            symbol = None
+            exports = self._module_exports(path, proc_layer_name, vad_start, caches)
+            if exports:
+                sorted_rvas, rva_to_name = exports
+                if rva in rva_to_name:
+                    symbol = rva_to_name[rva]
+                else:
+                    prev = bisect.bisect_right(sorted_rvas, rva) - 1
+                    if prev >= 0:
+                        nearest = sorted_rvas[prev]
+                        symbol = "%s+0x%x" % (rva_to_name[nearest], rva - nearest)
+                symbol_cache[key] = symbol
+            return path, symbol
+        except Exception:  # pylint: disable=broad-except
+            return None, None
+
     def _generator(self):
         kernel = self.context.modules[self.config["kernel"]]
         kernel_layer = self.context.layers[kernel.layer_name]
@@ -141,6 +262,11 @@ class Threads(interfaces.plugins.PluginInterface):
         na = renderers.NotAvailableValue
         vads_cache = {}    # owner _EPROCESS offset -> VAD ranges (start-path lookup)
         layer_cache = {}   # owner _EPROCESS offset -> rebuilt process layer name
+        exports_cache = {}   # module path (lower) -> parsed export table
+        failed_layers = set()  # (module path, layer) parse attempts that failed
+        symbol_cache = {}    # (module path, rva) -> export name (or None)
+        caches = (exports_cache, failed_layers, symbol_cache)
+        self._pe_table_name = None  # PE symbol table — created lazily, once
 
         for ethread in thrdscan.ThrdScan.scan_threads(self.context, self.config["kernel"]):
             try:
@@ -195,19 +321,30 @@ class Threads(interfaces.plugins.PluginInterface):
                 win32_start_addr = None
 
             # Resolve the start addresses to the mapped module (VAD file path),
-            # exactly as thrdscan does; PID 4 (System) has no user VADs.
+            # exactly as thrdscan does, and on to the export name at/nearest
+            # the address (CAR thread.start_function) through PESymbols —
+            # the debugregisters.py pattern; PID 4 (System) has no user VADs.
             start_path = win32_start_path = None
+            start_func = win32_start_func = None
             if owner is not None and pid != 4:
                 try:
                     vads = pe_symbols.PESymbols.get_vads_for_process_cache(
                         vads_cache, owner)
                     if vads:
+                        # The export table is user-mode memory: parse it
+                        # through the owner's rebuilt address space (the same
+                        # cached layer the TEB read below uses).
+                        owner_off = int(owner.vol.offset)
+                        if owner_off not in layer_cache:
+                            layer_cache[owner_off] = self._process_layer(
+                                owner, kernel_layer)
+                        proc_layer_name = layer_cache[owner_off]
                         if start_addr is not None:
-                            start_path = pe_symbols.PESymbols.filepath_for_address(
-                                vads, start_addr)
+                            start_path, start_func = self._path_and_symbol(
+                                vads, start_addr, proc_layer_name, caches)
                         if win32_start_addr is not None:
-                            win32_start_path = pe_symbols.PESymbols.filepath_for_address(
-                                vads, win32_start_addr)
+                            win32_start_path, win32_start_func = self._path_and_symbol(
+                                vads, win32_start_addr, proc_layer_name, caches)
                 except Exception:  # pylint: disable=broad-except
                     pass
 
@@ -242,6 +379,8 @@ class Threads(interfaces.plugins.PluginInterface):
                 stack_limit if stack_limit is not None else na(),
                 user_stack_base if user_stack_base is not None else na(),
                 user_stack_limit if user_stack_limit is not None else na(),
+                start_func or na(),
+                win32_start_func or na(),
             ))
 
     def run(self):
@@ -261,6 +400,8 @@ class Threads(interfaces.plugins.PluginInterface):
                 ("StackLimit", int),
                 ("UserStackBase", int),
                 ("UserStackLimit", int),
+                ("StartFunction", str),
+                ("Win32StartFunction", str),
             ],
             self._generator(),
         )

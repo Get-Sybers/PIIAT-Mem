@@ -417,6 +417,76 @@ def test_dotted_computername_is_the_fqdn_l2t_rule():
     assert proc["fqdn"] == "HOST1.EXAMPLE.COM"           # the dotted name IS the fqdn
 
 
+def test_process_env_vars_and_thread_start_function_mapped():
+    p = normalize.normalize("windows.piiat.processes", {
+        "Offset": 0xa, "Guid": "proc-a", "PID": 10, "PPID": 4,
+        "ImageFileName": "x.exe", "Path": r"C:\x.exe", "CommandLine": "c",
+        "ParentPath": None, "CreateTime": "2020-01-01T00:00:10+00:00",
+        "DllCount": 0, "LoadedDlls": None, "Hidden": False, "Sid": None,
+        "User": None, "LogonId": None, "Cwd": r"C:\Users\x",
+        "IntegrityLevel": "high", "EnvVars": "PATH=C:\\; TEMP=C:\\Temp"})
+    assert p["env_vars"] == "PATH=C:\\; TEMP=C:\\Temp"
+    t = normalize.normalize("windows.piiat.threads", {
+        "Offset": 1, "OwnerOffset": 0xa, "PID": 10, "TID": 7,
+        "CreateTime": "2020-01-01T00:00:20+00:00",
+        "Win32StartAddress": 0x140, "Win32StartPath": r"\Windows\System32\mssrch.dll",
+        "Win32StartFunction": "DllCanUnloadNow+0x10",
+        "StartPath": r"\Windows\System32\ntdll.dll", "StartFunction": "RtlUserThreadStart"})
+    assert t["start_function"] == "DllCanUnloadNow+0x10"      # the Win32 (user) start
+    assert t["start_module"] == r"\Windows\System32\mssrch.dll"
+    assert t["_native"]["StartFunction"] == "RtlUserThreadStart"  # kernel wrapper kept
+
+
+def test_access_events_ride_process_with_target_identity():
+    p = _tag(_proc(10, 4, 0xa, "csrss.exe", r"C:\W\csrss.exe", "2020-01-01T00:00:10+00:00"))
+    a1 = _tag(normalize.normalize("windows.piiat.access", {
+        "OwnerOffset": 0xa, "PID": 10, "ProcessName": "csrss.exe", "HandleValue": 756,
+        "GrantedAccess": 0x1FFFFF, "TargetOffset": 0xb, "TargetPid": 996,
+        "TargetName": "svchost.exe"}))
+    a2 = _tag(normalize.normalize("windows.piiat.access", {
+        "OwnerOffset": 0xa, "PID": 10, "ProcessName": "csrss.exe", "HandleValue": 900,
+        "GrantedAccess": 0x1FFFFF, "TargetOffset": 0xc, "TargetPid": 700,
+        "TargetName": "lsass.exe"}))
+    assert a1["car_object"] == "process" and a1["car_action"] == "access"
+    assert a1["guid"] == "proc-a"                     # CAR: guid = the INITIATOR
+    assert a1["target_guid"] == "proc-b"
+    out = enrich.enrich([p, a1, a2])
+    acc = [e for e in out if e.get("car_action") == "access"]
+    assert len(acc) == 2                              # distinct targets never collapse
+    assert all(e["link_confidence"] == "definitive" for e in acc)
+    assert all(e["image_path"] == r"C:\W\csrss.exe" for e in acc)  # initiator context
+    assert {e["target_name"] for e in acc} == {"svchost.exe", "lsass.exe"}
+
+
+def test_mft_rows_merge_into_one_create_event_with_timestomp_tell():
+    si = _tag(normalize.normalize("windows.mftscan.MFTScan", {
+        "Offset": 1, "Record Type": "FILE", "Record Number": 99107, "Link Count": 1,
+        "MFT Type": "File", "Permissions": "a", "Attribute Type": "STANDARD_INFORMATION",
+        "Created": "2015-01-01T00:00:00+00:00",       # stomped (backdated)
+        "Modified": "2019-01-29T04:27:51+00:00", "Updated": None, "Accessed": None,
+        "Filename": None}))
+    fn1 = _tag(normalize.normalize("windows.mftscan.MFTScan", {
+        "Offset": 1, "Record Type": "FILE", "Record Number": 99107, "Link Count": 1,
+        "MFT Type": "File", "Permissions": "a", "Attribute Type": "FILE_NAME",
+        "Created": "2019-01-29T04:27:51+00:00", "Modified": None, "Updated": None,
+        "Accessed": None, "Filename": "CSS_1_~1.CSS"}))
+    fn2 = _tag(normalize.normalize("windows.mftscan.MFTScan", {
+        "Offset": 1, "Record Type": "FILE", "Record Number": 99107, "Link Count": 1,
+        "MFT Type": "File", "Permissions": "a", "Attribute Type": "FILE_NAME",
+        "Created": "2019-01-29T04:27:51+00:00", "Modified": None, "Updated": None,
+        "Accessed": None, "Filename": "evil-css[1].css"}))
+    out = enrich.enrich([si, fn1, fn2])
+    files = [e for e in out if e["car_object"] == "file"]
+    assert len(files) == 1                            # one event per MFT record
+    f = files[0]
+    assert f["guid"] == "file-mft-99107"
+    assert f["file_name"] == "evil-css[1].css"        # longest (non-8.3) name wins
+    assert f["extension"] == "css"
+    assert f["creation_time"] == "2015-01-01T00:00:00+00:00"          # SI
+    assert f["previous_creation_time"] == "2019-01-29T04:27:51+00:00" # FN differs
+    assert f["timestamp"] == f["creation_time"] and f["car_action"] == "create"
+
+
 # ---- store + output --------------------------------------------------------
 
 def test_store_and_outputs(tmp_path):

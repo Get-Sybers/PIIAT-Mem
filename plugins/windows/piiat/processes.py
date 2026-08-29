@@ -25,6 +25,9 @@ built-in plugin gives together:
                   own tables (the getsids lookup)
   LogonId         the token AuthenticationId LUID as a hex string — joins the
                   process to its `user_session` (CAR `login_id`)
+  EnvVars         CAR `env_vars`: the environment variables within the
+                  process's memory space (PEB ProcessParameters.Environment,
+                  the windows.envars walk), "NAME=value; NAME=value; ..."
 
 A psscan process is found in the PHYSICAL layer, so `EPROCESS.get_peb()` /
 `load_order_modules()` (which build the process layer off `self.vol.layer_name`)
@@ -61,7 +64,7 @@ class Processes(interfaces.plugins.PluginInterface):
     """Process records (psscan) with full image path, parent path and loaded DLLs."""
 
     _required_framework_version = (2, 0, 0)
-    _version = (1, 1, 0)
+    _version = (1, 2, 0)
 
     @classmethod
     def get_requirements(cls):
@@ -98,15 +101,19 @@ class Processes(interfaces.plugins.PluginInterface):
         except Exception:  # pylint: disable=broad-except
             return None
 
+    # Environment block read cap (bytes) and rendered-string cap (chars).
+    _ENV_READ_MAX = 32 * 1024
+    _ENV_STR_MAX = 4096
+
     def _enrich(self, proc, kernel_layer):
-        """(full image path, command line, cwd, [loaded dll paths]) via the
-        rebuilt process layer; empty where a field / the whole PEB is
+        """(full image path, command line, cwd, env vars, [loaded dll paths])
+        via the rebuilt process layer; empty where a field / the whole PEB is
         unreachable."""
-        image_path = command_line = cwd = ""
+        image_path = command_line = cwd = env_vars = ""
         dlls = []
         layer_name = self._process_layer(proc, kernel_layer)
         if layer_name is None:
-            return image_path, command_line, cwd, dlls
+            return image_path, command_line, cwd, env_vars, dlls
         try:
             sym_table = proc.get_symbol_table_name()
             peb = self.context.object(
@@ -127,6 +134,33 @@ class Processes(interfaces.plugins.PluginInterface):
             except Exception:  # pylint: disable=broad-except
                 pass
             try:
+                # CAR process.env_vars: ProcessParameters.Environment points at
+                # a UTF-16 double-null-terminated multi-string block (the same
+                # walk windows.envars does), read through the rebuilt process
+                # layer. EnvironmentSize is Vista+; XP has only .Length.
+                block = int(params.Environment)
+                try:
+                    size = int(params.EnvironmentSize)
+                except AttributeError:
+                    size = int(params.Length)
+                size = min(size, self._ENV_READ_MAX)
+                if block and size > 0:
+                    raw = self.context.layers[layer_name].read(
+                        block, size, pad=True)
+                    entries = []
+                    for envar in raw.decode(
+                            "utf-16-le", errors="replace").split("\x00"):
+                        # A real entry is NAME=value with both halves non-empty
+                        # (drives set "=C:=C:\\..." style entries starting "=").
+                        split_index = envar.find("=")
+                        if split_index > 0 and envar[split_index + 1:]:
+                            entries.append(envar)
+                    env_vars = "; ".join(entries)
+                    if len(env_vars) > self._ENV_STR_MAX:
+                        env_vars = env_vars[:self._ENV_STR_MAX - 1] + "…"
+            except Exception:  # pylint: disable=broad-except
+                pass
+            try:
                 for entry in peb.Ldr.InLoadOrderModuleList.to_list(
                         sym_table + constants.BANG + "_LDR_DATA_TABLE_ENTRY",
                         "InLoadOrderLinks"):
@@ -140,7 +174,7 @@ class Processes(interfaces.plugins.PluginInterface):
                 pass
         except Exception:  # pylint: disable=broad-except
             pass
-        return image_path, command_line, cwd, dlls
+        return image_path, command_line, cwd, env_vars, dlls
 
     def _token_identity(self, proc):
         """(user SID string, AuthenticationId LUID as int) from the process
@@ -263,7 +297,8 @@ class Processes(interfaces.plugins.PluginInterface):
             # for CAR `guid` (a memory image has no Sysmon ProcessGuid). See
             # docs/design/car-store.md §3.
             offset = int(proc.vol.offset)
-            image_path, command_line, cwd, dlls = self._enrich(proc, kernel_layer)
+            image_path, command_line, cwd, env_vars, dlls = self._enrich(
+                proc, kernel_layer)
             try:
                 create_time = proc.get_create_time()
             except Exception:  # pylint: disable=broad-except
@@ -272,13 +307,14 @@ class Processes(interfaces.plugins.PluginInterface):
             if image_path:
                 path_by_pid[pid] = image_path
             records.append((offset, pid, ppid, name, image_path, command_line,
-                            cwd, create_time, dlls, sid, logon_id, integrity))
+                            cwd, env_vars, create_time, dlls, sid, logon_id,
+                            integrity))
 
         # SID -> account-name tables (ProfileList + well-known), built once.
         sid_names, sid_res = self._sid_names()
 
         # Pass two: synthesize the guid, fill ParentPath from the pid->path map, emit.
-        for (offset, pid, ppid, name, image_path, command_line, cwd,
+        for (offset, pid, ppid, name, image_path, command_line, cwd, env_vars,
              create_time, dlls, sid, logon_id, integrity) in records:
             na = renderers.NotAvailableValue
             # Synthesize CAR `guid` from the offset (per-image unique; the store
@@ -306,6 +342,7 @@ class Processes(interfaces.plugins.PluginInterface):
                 f"0x{logon_id:x}" if logon_id is not None else na(),
                 cwd or na(),
                 integrity or na(),
+                env_vars or na(),
             ))
 
     def run(self):
@@ -328,6 +365,7 @@ class Processes(interfaces.plugins.PluginInterface):
                 ("LogonId", str),
                 ("Cwd", str),
                 ("IntegrityLevel", str),
+                ("EnvVars", str),
             ],
             self._generator(),
         )

@@ -57,9 +57,22 @@ All notable changes are documented here, following
     after a successful bind/listen).
 - Honest nulls documented per object (hashes/signers need unmapped file bytes;
   call traces are ephemeral; src_pid of thread creation is not recorded; …).
-  Deferred as future capability: process env_vars, thread.start_function
-  (export-name resolution), process access events from Process-type handles
-  (access_level/target_*), file timestamps via MFT scan.
+- **Process ACCESS events** — `windows.piiat.access`: an open Process-type
+  handle is an observed "A holds access to B" fact; one CAR process event with
+  `car_action="access"`, guid = the INITIATING process (per CAR), plus
+  `access_level` (the granted mask), `target_pid`/`target_name`/`target_guid`
+  (the target's offset-derived guid). Both sides' offsets follow psscan's
+  convention; initiator context inherits definitively; the dedupe key includes
+  target_guid + access_level so distinct targets never collapse.
+- **NTFS times from memory-resident $MFT** — `windows.mftscan.MFTScan` (built-in)
+  joins the run; enrichment merges its per-attribute rows into one file
+  `create` event per record (`file-mft-<record#>`): name from the longest
+  FILE_NAME form, `creation_time` from STANDARD_INFORMATION, and
+  `previous_creation_time` where the FILE_NAME birth time differs — the
+  timestomp tell recorded as data, the verdict left to the analyst.
+- **`process.env_vars`** (PEB Environment block, capped excerpt) and
+  **`thread.start_function`/Win32 variant** (pe_symbols export-name resolution)
+  — the last provably-fillable audit items.
 
 ### Changed
 - Default plugin set: the piiat.* family supersedes windows.thrdscan /
