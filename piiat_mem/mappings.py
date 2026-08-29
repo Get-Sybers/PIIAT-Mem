@@ -47,6 +47,25 @@ def transport(field):
     return ("transport", field)
 
 
+def const(value):
+    """A constant the observation itself proves (e.g. a kernel socket object
+    exists only after a successful bind — socket.success is true by existence)."""
+    return ("const", value)
+
+
+def ext(field):
+    """The file extension from a path field, lowercase, no dot ('a\\b.XML' -> 'xml')."""
+    return ("ext", field)
+
+
+def exe_path(field):
+    """The executable path parsed out of a service ImagePath-style command line
+    ('"C:\\p q\\x.exe" -k net' -> 'C:\\p q\\x.exe'; '%SystemRoot%\\s\\y.exe -k n'
+    -> '%SystemRoot%\\s\\y.exe'). Parsing, not guessing — the path is verbatim
+    inside the string."""
+    return ("exe_path", field)
+
+
 def family(field):
     """Address family from Volatility's Proto ('TCPv4' -> 'ipv4')."""
     return ("family", field)
@@ -93,7 +112,7 @@ _SOCKET_MAP = {
     "props": {
         "local_address": "LocalAddr", "local_port": "LocalPort",
         "protocol": transport("Proto"), "family": family("Proto"),
-        "pid": "PID",
+        "pid": "PID", "success": const(True),
     },
     "keep": ["State", "Offset", "Owner", "ForeignAddr", "ForeignPort"],
 }
@@ -130,6 +149,9 @@ MAPPINGS = {
             # token-derived identity (v0.4.0): the process's own SID and user —
             # native extraction, not a weak join.
             "user": "User", "sid": "Sid",
+            # completeness pass: PEB CurrentDirectory + token mandatory label
+            "current_working_directory": "Cwd",
+            "integrity_level": "IntegrityLevel",
         },
         "keep": ["Offset", "ImageFileName", "LoadedDlls", "DllCount", "Hidden", "LogonId"],
     },
@@ -172,7 +194,8 @@ MAPPINGS = {
         "object": "file", "action": None, "ts": None,
         "guid": {"fields": ["FileObjectOffset", "PID"]},
         "owning_pid": "PID", "owning_offset": "OwnerOffset",
-        "props": {"file_path": "Path", "file_name": basename("Path"), "pid": "PID"},
+        "props": {"file_path": "Path", "file_name": basename("Path"),
+                  "extension": ext("Path"), "pid": "PID"},
         "keep": ["HandleValue", "GrantedAccess", "FileObjectOffset", "ProcessName"],
     },
     "windows.piiat.sessions": {
@@ -227,7 +250,8 @@ MAPPINGS = {
     "windows.filescan": {
         "object": "file", "action": None, "ts": None,
         "guid": {"fields": ["Offset"]}, "owning_pid": None,
-        "props": {"file_path": "Name", "file_name": basename("Name")},
+        "props": {"file_path": "Name", "file_name": basename("Name"),
+                  "extension": ext("Name")},
         "keep": [],
     },
     # ---- registry — identity is (hive,key,value); user from the hive path ---
@@ -239,6 +263,9 @@ MAPPINGS = {
         "guid": {"fields": ["Hive", "Key", "ValueName"]}, "owning_pid": None,
         "props": {
             "key": "Key", "value": "ValueName", "data": "ValueData",
+            # the row IS a value_edit at LastWrite, and the resident data is the
+            # value's content AFTER that edit — exactly CAR new_content.
+            "new_content": "ValueData",
             "type": "ValueType", "hive": "Hive", "user": user_from_hive("Hive"),
         },
         "keep": [],
@@ -250,7 +277,12 @@ MAPPINGS = {
         "object": "service", "action": None, "ts": None,
         "guid": {"fields": ["Offset"]}, "owning_pid": "PID",
         "props": {
-            "name": "Name", "image_path": "Binary", "exe": basename("Binary"),
+            "name": "Name",
+            # Binary is null for STOPPED services; the registry ImagePath in the
+            # same row carries the executable. BOTH sources can carry arguments
+            # (svchost.exe -k ...), so the path is parsed out of either.
+            "image_path": exe_path(first("Binary", "Binary (Registry)")),
+            "exe": basename(exe_path(first("Binary", "Binary (Registry)"))),
             "command_line": "Binary (Registry)", "pid": "PID",
         },
         "keep": ["Order", "Start", "State", "Type", "Display", "Dll"],

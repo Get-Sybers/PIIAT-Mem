@@ -99,13 +99,14 @@ class Processes(interfaces.plugins.PluginInterface):
             return None
 
     def _enrich(self, proc, kernel_layer):
-        """(full image path, command line, [loaded dll paths]) via the rebuilt
-        process layer; empty where a field / the whole PEB is unreachable."""
-        image_path = command_line = ""
+        """(full image path, command line, cwd, [loaded dll paths]) via the
+        rebuilt process layer; empty where a field / the whole PEB is
+        unreachable."""
+        image_path = command_line = cwd = ""
         dlls = []
         layer_name = self._process_layer(proc, kernel_layer)
         if layer_name is None:
-            return image_path, command_line, dlls
+            return image_path, command_line, cwd, dlls
         try:
             sym_table = proc.get_symbol_table_name()
             peb = self.context.object(
@@ -118,6 +119,11 @@ class Processes(interfaces.plugins.PluginInterface):
                 pass
             try:
                 command_line = params.CommandLine.get_string()
+            except Exception:  # pylint: disable=broad-except
+                pass
+            try:
+                # CAR current_working_directory: _CURDIR.DosPath in the same struct
+                cwd = params.CurrentDirectory.DosPath.get_string()
             except Exception:  # pylint: disable=broad-except
                 pass
             try:
@@ -134,7 +140,7 @@ class Processes(interfaces.plugins.PluginInterface):
                 pass
         except Exception:  # pylint: disable=broad-except
             pass
-        return image_path, command_line, dlls
+        return image_path, command_line, cwd, dlls
 
     def _token_identity(self, proc):
         """(user SID string, AuthenticationId LUID as int) from the process
@@ -143,13 +149,25 @@ class Processes(interfaces.plugins.PluginInterface):
         try:
             token = proc.Token.dereference().cast("_TOKEN")
         except Exception:  # pylint: disable=broad-except
-            return None, None
+            return None, None, None
         sid = None
+        integrity = None
+        # CAR integrity_level MUST be low/medium/high/system: map the token's
+        # S-1-16-<rid> mandatory-label group (windows.getsids surfaces the same
+        # SIDs) onto those four buckets.
+        _levels = {0: "low", 4096: "low", 8192: "medium", 8448: "medium",
+                   12288: "high", 16384: "system", 20480: "system"}
         try:
-            # UserAndGroups[0] is the token's USER SID (the rest are groups).
+            # UserAndGroups[0] is the token's USER SID (the rest are groups,
+            # including the S-1-16-* mandatory label).
             for sid_string in token.get_sids():
-                sid = sid_string
-                break
+                if sid is None:
+                    sid = sid_string
+                if str(sid_string).startswith("S-1-16-"):
+                    try:
+                        integrity = _levels.get(int(str(sid_string).rsplit("-", 1)[1]))
+                    except (ValueError, IndexError):
+                        pass
         except Exception:  # pylint: disable=broad-except
             pass
         logon_id = None
@@ -158,7 +176,7 @@ class Processes(interfaces.plugins.PluginInterface):
             logon_id = (int(luid.HighPart) << 32) | int(luid.LowPart)
         except Exception:  # pylint: disable=broad-except
             pass
-        return sid, logon_id
+        return sid, logon_id, integrity
 
     def _sid_names(self):
         """({sid: name}, [(compiled_re, name)]) for resolving SIDs to account
@@ -245,23 +263,23 @@ class Processes(interfaces.plugins.PluginInterface):
             # for CAR `guid` (a memory image has no Sysmon ProcessGuid). See
             # docs/design/car-store.md §3.
             offset = int(proc.vol.offset)
-            image_path, command_line, dlls = self._enrich(proc, kernel_layer)
+            image_path, command_line, cwd, dlls = self._enrich(proc, kernel_layer)
             try:
                 create_time = proc.get_create_time()
             except Exception:  # pylint: disable=broad-except
                 create_time = None
-            sid, logon_id = self._token_identity(proc)
+            sid, logon_id, integrity = self._token_identity(proc)
             if image_path:
                 path_by_pid[pid] = image_path
             records.append((offset, pid, ppid, name, image_path, command_line,
-                            create_time, dlls, sid, logon_id))
+                            cwd, create_time, dlls, sid, logon_id, integrity))
 
         # SID -> account-name tables (ProfileList + well-known), built once.
         sid_names, sid_res = self._sid_names()
 
         # Pass two: synthesize the guid, fill ParentPath from the pid->path map, emit.
-        for (offset, pid, ppid, name, image_path, command_line, create_time,
-             dlls, sid, logon_id) in records:
+        for (offset, pid, ppid, name, image_path, command_line, cwd,
+             create_time, dlls, sid, logon_id, integrity) in records:
             na = renderers.NotAvailableValue
             # Synthesize CAR `guid` from the offset (per-image unique; the store
             # namespaces it by source image). ParentPath by pid stays a HEURISTIC
@@ -286,6 +304,8 @@ class Processes(interfaces.plugins.PluginInterface):
                 sid or na(),
                 user or na(),
                 f"0x{logon_id:x}" if logon_id is not None else na(),
+                cwd or na(),
+                integrity or na(),
             ))
 
     def run(self):
@@ -306,6 +326,8 @@ class Processes(interfaces.plugins.PluginInterface):
                 ("Sid", str),
                 ("User", str),
                 ("LogonId", str),
+                ("Cwd", str),
+                ("IntegrityLevel", str),
             ],
             self._generator(),
         )

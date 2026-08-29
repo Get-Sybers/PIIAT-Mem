@@ -14,6 +14,11 @@ Implements docs/design/car-store.md §3 over the normalized events of ONE run:
 - **inheritance**: a linked event inherits its process context — but only
   properties the object HAS in the CAR model, and only where its own value is
   null. A natively-supplied value is never overwritten.
+- **host identity**: hostname/fqdn from the image's OWN registry
+  (ComputerName + Tcpip Hostname/Domain/DhcpDomain) applied to every event
+  whose object carries those fields — the whole image is one host. A flow's
+  src_hostname/src_fqdn get the same (src = the local endpoint by the
+  documented convention).
 - **registry user via ProfileList**: a registry event on a SID-form user hive
   (``\\REGISTRY\\USER\\S-1-5-...``) resolves `user` through the image's OWN
   SOFTWARE-hive ProfileList mapping (SID -> ProfileImagePath basename) — the
@@ -60,8 +65,9 @@ _WELL_KNOWN_SIDS = {
 }
 
 # Process-context properties a spoke may inherit (filtered per object by the
-# CAR model, filled only where null).
-_INHERIT = ["exe", "image_path", "command_line", "user", "sid", "fqdn", "hostname"]
+# CAR model, filled only where null). ppid: a spoke's CAR `ppid` means the
+# parent of the process it belongs to — the owner's own ppid.
+_INHERIT = ["exe", "image_path", "command_line", "user", "sid", "fqdn", "hostname", "ppid"]
 
 
 def _populated(ev: dict) -> int:
@@ -138,6 +144,47 @@ def _fill_user_from_sid_hive(ev: dict, sid_users: dict):
             ev["user"] = u
 
 
+def _host_identity(events: list[dict]) -> dict:
+    """image -> (hostname, fqdn), from the image's OWN registry evidence (the
+    plugin's default target list already extracts both keys):
+    - hostname: ...\\Control\\ComputerName\\ComputerName, or
+      ...\\Services\\Tcpip\\Parameters (Hostname / NV Hostname)
+    - domain:   ...\\Tcpip\\Parameters Domain (preferred) else DhcpDomain
+    The hostname/fqdn split follows the SAME convention as the DX_DFIR
+    log2timeline processor (l2t_json_dfir resolves the image hostname once from
+    preprocessing and stamps every event; the CAR layer splits on a dot):
+    a dotted name IS the fqdn (hostname = its first label); otherwise
+    fqdn = hostname.domain where a domain is known. Definitive per artefact —
+    the whole image IS one host, so the identity applies to every event."""
+    host, dom_pref, dom_fallback = {}, {}, {}
+    for ev in events:
+        if ev["car_object"] != "registry":
+            continue
+        img = ev.get("source_image")
+        key = str(ev.get("key") or "")
+        val = str(ev.get("value") or "")
+        data = ev.get("data")
+        if data in (None, ""):
+            continue
+        if key.endswith("\\Control\\ComputerName\\ComputerName") and val == "ComputerName":
+            host.setdefault(img, str(data))
+        elif key.endswith("\\Tcpip\\Parameters"):
+            if val in ("Hostname", "NV Hostname"):
+                host.setdefault(img, str(data))
+            elif val == "Domain":
+                dom_pref.setdefault(img, str(data))
+            elif val == "DhcpDomain":
+                dom_fallback.setdefault(img, str(data))
+    out = {}
+    for img, h in host.items():
+        if "." in h:                       # a dotted name IS the fqdn (l2t rule)
+            out[img] = (h.split(".", 1)[0], h)
+            continue
+        dom = dom_pref.get(img) or dom_fallback.get(img)
+        out[img] = (h, f"{h}.{dom}" if dom else None)
+    return out
+
+
 def _process_index(events: list[dict]) -> dict:
     """(image, pid) -> [process events sorted by create time ascending]."""
     idx = defaultdict(list)
@@ -191,10 +238,22 @@ def enrich(events: list[dict]) -> list[dict]:
     procs = _process_index(events)
     procs_by_offset = _process_offset_index(events)
     sid_users = _sid_user_index(events)
+    hosts = _host_identity(events)
 
     for ev in events:
         image = ev.get("source_image")
         obj_fields = set(model[ev["car_object"]]["fields"])
+
+        # Host identity — the whole image is one host, so hostname/fqdn apply
+        # to every event that has those fields (and a flow's src_* IS the local
+        # endpoint by the documented convention). Fills nulls only.
+        ident = hosts.get(image)
+        if ident:
+            hostname, fqdn = ident
+            for f, v in (("hostname", hostname), ("fqdn", fqdn),
+                         ("src_hostname", hostname), ("src_fqdn", fqdn)):
+                if v and f in obj_fields and ev.get(f) in (None, ""):
+                    ev[f] = v
 
         # Canonical well-known account names, store-wide: `user` must mean the
         # same string in every table for the same SID.

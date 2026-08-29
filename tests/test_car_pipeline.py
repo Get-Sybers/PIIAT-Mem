@@ -374,6 +374,49 @@ def test_thread_start_module_never_mixed_source():
     assert ev["_native"]["StartPath"] == r"\Windows\System32\ntdll.dll"
 
 
+def test_host_identity_fills_every_object_from_image_registry():
+    comp = _tag(normalize.normalize("windows.piiat.registry", {
+        "Hive": r"\REGISTRY\MACHINE\SYSTEM",
+        "Key": r"\REGISTRY\MACHINE\SYSTEM\ControlSet001\Control\ComputerName\ComputerName",
+        "ValueName": "ComputerName", "ValueData": "DESKTOP-8", "ValueType": "REG_SZ",
+        "LastWrite": "2019-01-28"}))
+    dom = _tag(normalize.normalize("windows.piiat.registry", {
+        "Hive": r"\REGISTRY\MACHINE\SYSTEM",
+        "Key": r"\REGISTRY\MACHINE\SYSTEM\ControlSet001\Services\Tcpip\Parameters",
+        "ValueName": "DhcpDomain", "ValueData": "localdomain", "ValueType": "REG_SZ",
+        "LastWrite": "2019-01-28"}))
+    p = _tag(_proc(10, 4, 0xa, "x.exe", r"C:\x.exe", "2020-01-01T00:00:10+00:00"))
+    t = _tag(normalize.normalize("windows.piiat.threads", {
+        "Offset": 9, "OwnerOffset": 0xa, "PID": 10, "TID": 7,
+        "CreateTime": "2020-01-01T00:00:20+00:00"}))
+    fl = _tag(normalize.normalize("windows.piiat.network", {
+        "Offset": 8, "OwnerOffset": 0xa, "Proto": "TCPv4", "LocalAddr": "10.0.0.2",
+        "LocalPort": 5000, "ForeignAddr": "1.2.3.4", "ForeignPort": 443,
+        "State": "ESTABLISHED", "PID": 10, "Owner": "x.exe",
+        "Created": "2020-01-01T00:01:00+00:00"}))
+    out = enrich.enrich([comp, dom, p, t, fl])
+    by = {e["car_object"]: e for e in out}
+    assert by["process"]["hostname"] == "DESKTOP-8"
+    assert by["process"]["fqdn"] == "DESKTOP-8.localdomain"
+    assert by["thread"]["hostname"] == "DESKTOP-8"       # thread has no fqdn field
+    assert by["registry"]["hostname"] == "DESKTOP-8"
+    assert by["flow"]["src_hostname"] == "DESKTOP-8"     # src = the local endpoint
+    assert by["flow"].get("dest_hostname") is None       # never asserted for remote
+
+
+def test_dotted_computername_is_the_fqdn_l2t_rule():
+    comp = _tag(normalize.normalize("windows.piiat.registry", {
+        "Hive": r"\REGISTRY\MACHINE\SYSTEM",
+        "Key": r"\REGISTRY\MACHINE\SYSTEM\ControlSet001\Control\ComputerName\ComputerName",
+        "ValueName": "ComputerName", "ValueData": "HOST1.EXAMPLE.COM",
+        "ValueType": "REG_SZ", "LastWrite": "2019-01-28"}))
+    p = _tag(_proc(10, 4, 0xa, "x.exe", r"C:\x.exe", "2020-01-01T00:00:10+00:00"))
+    out = enrich.enrich([comp, p])
+    proc = [e for e in out if e["car_object"] == "process"][0]
+    assert proc["hostname"] == "HOST1"                   # first label
+    assert proc["fqdn"] == "HOST1.EXAMPLE.COM"           # the dotted name IS the fqdn
+
+
 # ---- store + output --------------------------------------------------------
 
 def test_store_and_outputs(tmp_path):

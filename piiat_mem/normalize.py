@@ -66,6 +66,26 @@ def _resolve(src, rec):
         v = _resolve(src[1], rec)
         m = _PROTO.match(str(v)) if not _blank(v) else None
         return ("ipv" + m.group(3)) if m and m.group(3) else None
+    if kind == "const":
+        return src[1]
+    if kind == "ext":
+        v = _resolve(src[1], rec)
+        if _blank(v):
+            return None
+        e = ntpath.splitext(ntpath.basename(str(v)))[1].lstrip(".").lower()
+        return e or None
+    if kind == "exe_path":
+        v = _resolve(src[1], rec)
+        if _blank(v):
+            return None
+        s = str(v).strip()
+        if s.startswith('"'):
+            end = s.find('"', 1)
+            return s[1:end] if end > 0 else s.strip('"')
+        i = s.lower().find(".exe")
+        if i >= 0:
+            return s[:i + 4]
+        return s.split(" ")[0]
     raise ValueError(f"unknown source marker: {src!r}")
 
 

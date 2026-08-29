@@ -34,6 +34,33 @@ All notable changes are documented here, following
   ProfileImagePath basename); hive FILE paths now also cover
   `ServiceProfiles\<name>\` (service-account NTUSER.DAT).
 
+### Added (completeness pass — epic #1 capstone)
+- A 10-agent per-object **field-coverage audit** (every canonical CAR property
+  classified filled / fillable-but-missed / honestly-unfillable against a real
+  store) drove the final fills:
+  - **hostname/fqdn on every object** from the image's OWN registry
+    (ComputerName + Tcpip Hostname/Domain/DhcpDomain), following the same
+    convention as the DX_DFIR log2timeline processor (identity resolved once
+    per image, stamped on every event; a dotted name IS the fqdn). A flow's
+    src_hostname/src_fqdn get the same (src = the local endpoint).
+  - process.current_working_directory (PEB CurrentDirectory.DosPath) and
+    process.integrity_level (token S-1-16 mandatory label → low/medium/high/
+    system) — new Cwd/IntegrityLevel plugin columns.
+  - registry.new_content = the resident data (the content AFTER the asserted
+    value_edit at LastWrite).
+  - file.extension (lossless derivation from the path); spoke `ppid` inherited
+    from the definitively-linked owner (file/service/flow).
+  - service.image_path/exe parsed from Binary OR the registry ImagePath
+    (stopped services included — 305→717/721 on the real dump); arguments stay
+    in command_line.
+  - socket.success = true by existence (a kernel socket object exists only
+    after a successful bind/listen).
+- Honest nulls documented per object (hashes/signers need unmapped file bytes;
+  call traces are ephemeral; src_pid of thread creation is not recorded; …).
+  Deferred as future capability: process env_vars, thread.start_function
+  (export-name resolution), process access events from Process-type handles
+  (access_level/target_*), file timestamps via MFT scan.
+
 ### Changed
 - Default plugin set: the piiat.* family supersedes windows.thrdscan /
   dlllist / netscan / sessions. A superseded built-in's JSONL is now SKIPPED at
