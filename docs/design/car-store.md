@@ -52,7 +52,7 @@ Foreign keys:
 - `thread.tgt_pid → process.pid`  (thread runs in process) · `thread.src_pid → process.pid` (creator, for `remote_create`)
 - `module.pid   → process.pid`    · `flow.pid → process.pid` · `file.pid → process.pid` · `registry.pid → process.pid`
 - `service.pid  → process.pid`    · `service.ppid → process.pid`
-- `user_session.user → process.user` (weak; or `logon_id` where present)
+- `user_session.user → process.user` (weak; or `login_id` where present)
 
 The PIDs above are the *surface* the plugins expose. Because PIDs are **reused**,
 the real join is on process **`guid` (= `_EPROCESS` offset)**, with PID only as a
@@ -122,7 +122,7 @@ the reused PID:
 - **process `(guid = _EPROCESS offset)`** — `pid`+`create_time` only as a fallback
 - thread `(_ETHREAD offset, tgt_tid)` · module `(owning guid, base_address|module_path)`
 - flow `(socket offset; else pid + 5-tuple)` · driver `(image_path|module_name, base_address)`
-- registry `(hive, key, value, last_write)` · user_session `(logon_id|user, time)`
+- registry `(hive, key, value, last_write)` · user_session `(login_id|user, time)`
 - file `(file_path)` · service `(name)`
 
 ## 5. Store schema (SQLite, relational)
@@ -149,16 +149,18 @@ table (join targets) but never reach the timeline.
   timestamped rows appear; file / service / driver without a time remain
   store-only (still enrichment join targets).
 
-## 7. Note — car_data_model.json vs. the authoritative CAR model
+## 7. car_data_model.json — refreshed to the authoritative model
 
-The repo's `car_data_model.json` is a **9-object subset** and, on `process`, omits
-the identity fields the live CAR model defines — **`guid`, `parent_guid`,
-`target_guid`** (and the `access` action). Those fields are exactly the
-reuse-immune identity §3 relies on. Two options, for the owner to decide:
-refresh `car_data_model.json` to the full MITRE model (car.mitre.org — 15 objects:
-adds authentication, email, http, socket, …), or keep the subset and have
-PIIAT-Mem add the synthesized `guid`/`parent_guid` columns regardless. Either way
-the store carries `guid`; this doc treats CAR's real identity model as the target.
+`car_data_model.json` (repo root) has been regenerated from MITRE's own
+`mitre-attack/car` repo (`docs/data_model/*.md`) — now the full **13 objects**
+(was a 9-object subset): added **authentication, email, http, socket**, and
+`process` regained **`guid`, `parent_guid`, `target_guid`** + the `access` action
+(the reuse-immune identity §3 relies on). The refresh also picked up CAR's own
+renames since the old file: `flow.protocol` → `transport_protocol` (+`application_protocol`,
+`tcp_flags`), `registry.edit` → `key_edit`/`value_edit`, `user_session.logon_id` →
+`login_id` (the interactive/local/rdp/remote actions folded into a `login_type`
+field). `mappings.py` targets these authoritative names; the KQL `Car*` views still
+use the old names and need the same alignment (deferred — see the volatility lane).
 
 ---
 

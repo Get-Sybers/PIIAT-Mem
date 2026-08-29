@@ -85,7 +85,7 @@ MAPPINGS = {
         "props": {
             "src_ip": "LocalAddr", "src_port": "LocalPort",
             "dest_ip": "ForeignAddr", "dest_port": "ForeignPort",
-            "protocol": "Proto", "pid": "PID", "exe": "Owner",
+            "transport_protocol": "Proto", "pid": "PID", "exe": "Owner",
         },
         "keep": ["State"],
     },
@@ -95,7 +95,7 @@ MAPPINGS = {
         "props": {
             "src_ip": "LocalAddr", "src_port": "LocalPort",
             "dest_ip": "ForeignAddr", "dest_port": "ForeignPort",
-            "protocol": "Proto", "pid": "PID", "exe": "Owner",
+            "transport_protocol": "Proto", "pid": "PID", "exe": "Owner",
         },
         "keep": ["State"],
     },
@@ -108,7 +108,9 @@ MAPPINGS = {
     },
     # ---- registry — identity is (hive,key,value); user from the hive path ---
     "windows.piiat.registry": {
-        "object": "registry", "action": "edit", "ts": "LastWrite",
+        # one row per registry VALUE → CAR `value_edit` (CAR split `edit` into
+        # key_edit / value_edit).
+        "object": "registry", "action": "value_edit", "ts": "LastWrite",
         "guid": {"fields": ["Hive", "Key", "ValueName"]}, "owning_pid": None,
         "props": {
             "key": "Key", "value": "ValueName", "data": "ValueData",
@@ -129,7 +131,7 @@ MAPPINGS = {
     "windows.sessions": {
         "object": "user_session", "action": "login", "ts": "Create Time",
         "guid": {"fields": ["Session ID"]}, "owning_pid": "Process ID",
-        "props": {"user": "User Name", "logon_id": "Session ID"},
+        "props": {"user": "User Name", "login_id": "Session ID"},
         "keep": ["Session Type", "Process"],
     },
 }
