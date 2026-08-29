@@ -4,6 +4,19 @@ All notable changes are documented here, following
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2026-08-29
+
+### Changed
+- **Breaking:** the two custom plugins now live in the `windows` category to
+  match the built-in Volatility naming, and are referenced by the shorthand the
+  rest of the pipeline uses:
+  - `dfir_processes.DfirProcesses` → `windows.PIIAT_processes` (class
+    `PIIATProcesses`, now at `plugins/windows/PIIAT_processes.py`)
+  - `dfir_registry.DfirRegistry` → `windows.PIIAT_registry` (class
+    `PIIATRegistry`, now at `plugins/windows/PIIAT_registry.py`)
+  Anything selecting the old `dfir_processes.DfirProcesses` /
+  `dfir_registry.DfirRegistry` identifiers must switch to the new names.
+
 ## [0.1.0] - 2026-08-28
 
 ### Added

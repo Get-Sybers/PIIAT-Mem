@@ -1,6 +1,6 @@
 """Volatility 3 plugin: targeted registry values for the CAR data model.
 
-`dfir_registry.DfirRegistry` — instead of dumping whole hives, it reads only the
+`windows.PIIAT_registry` — instead of dumping whole hives, it reads only the
 forensically-relevant keys (the same target list Eric Zimmerman's RECmd batch
 uses on disk) out of the registry hives that are resident IN MEMORY, and emits
 one row per value:
@@ -18,7 +18,7 @@ in SOFTWARE, per-user keys in each NTUSER.DAT/UsrClass.dat). Override the list
 with --targets "a\\b,c\\d" to match a specific RECmd batch.
 
 Rendered by the jsonl_dfir renderer -> memory.VolatilityJson (Plugin =
-"dfir_registry.DfirRegistry") -> CarRegistry reads Record.Key/ValueName/…
+"windows.PIIAT_registry") -> CarRegistry reads Record.Key/ValueName/…
 """
 from volatility3.framework import interfaces, renderers, exceptions
 from volatility3.framework.configuration import requirements
@@ -60,7 +60,7 @@ _DEFAULT_TARGETS = [
 ]
 
 
-class DfirRegistry(interfaces.plugins.PluginInterface):
+class PIIATRegistry(interfaces.plugins.PluginInterface):
     """Targeted (RECmd-list) registry values recovered from memory hives."""
 
     _required_framework_version = (2, 0, 0)

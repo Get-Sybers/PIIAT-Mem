@@ -28,15 +28,15 @@ PLUGINS_DIR = os.path.join(REPO, "plugins")
 DEFAULT_IMAGE = "dfir/volatility:latest"
 
 # Plugins whose records carry a timestamp — the ones the timeline is built from.
-# (Order preserved; the two dfir_* plugins are the custom ones in ./plugins.)
+# (Order preserved; the two PIIAT_* plugins are the custom ones in ./plugins/windows.)
 TIMELINE_PLUGINS = [
-    "dfir_processes.DfirProcesses",   # process create times (psscan; unlinked too)
+    "windows.PIIAT_processes",        # process create times (psscan; unlinked too)
     "windows.pslist",                 # process create times (active list)
     "windows.dlllist",                # module load times
     "windows.thrdscan",               # thread create times
     "windows.netscan",                # socket created times
     "windows.sessions",               # session create times
-    "dfir_registry.DfirRegistry",     # registry key last-write times
+    "windows.PIIAT_registry",         # registry key last-write times
 ]
 # Plugins with no per-record time — still dumped for completeness (not timelined).
 CONTEXT_PLUGINS = ["windows.info", "windows.svcscan", "windows.filescan", "windows.modules"]

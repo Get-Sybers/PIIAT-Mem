@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "piiat-mem"
-version = "0.1.0"
+version = "0.2.0"
 description = "Put It In A Timeline (Memory) — a memory image to a Volatility 3 timeline (CSV/JSON), with DFIR plugins and a hardened container."
 readme = "README.md"
 requires-python = ">=3.10"
