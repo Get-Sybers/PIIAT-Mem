@@ -5,6 +5,10 @@
 active list are still found. Each row carries what CarProcess wants and no single
 built-in plugin gives together:
 
+  Offset          the _EPROCESS pool-scan offset — the process's unique kernel-
+                  object identity (reuse-proof, unlike PID)
+  Guid            CAR `guid` synthesized from Offset (memory has no Sysmon guid);
+                  the definitive join key for a process instance
   PID, PPID
   ImageFileName   the EPROCESS short name (<= 15 chars)
   Path            the FULL image path from the PEB (ProcessParameters.ImagePathName)
@@ -142,6 +146,11 @@ class Processes(interfaces.plugins.PluginInterface):
                 name = utility.array_to_string(proc.ImageFileName)
             except exceptions.InvalidAddressException:
                 continue
+            # The _EPROCESS pool-scan offset is the process's unique kernel-object
+            # identity — reuse-proof, unlike the PID. It is the memory-native basis
+            # for CAR `guid` (a memory image has no Sysmon ProcessGuid). See
+            # docs/design/car-store.md §3.
+            offset = int(proc.vol.offset)
             image_path, command_line, dlls = self._enrich(proc, kernel_layer)
             try:
                 create_time = proc.get_create_time()
@@ -149,13 +158,18 @@ class Processes(interfaces.plugins.PluginInterface):
                 create_time = None
             if image_path:
                 path_by_pid[pid] = image_path
-            records.append((pid, ppid, name, image_path, command_line,
+            records.append((offset, pid, ppid, name, image_path, command_line,
                             create_time, dlls))
 
-        # Pass two: fill ParentPath from the pid->path map and emit.
-        for pid, ppid, name, image_path, command_line, create_time, dlls in records:
+        # Pass two: synthesize the guid, fill ParentPath from the pid->path map, emit.
+        for offset, pid, ppid, name, image_path, command_line, create_time, dlls in records:
             na = renderers.NotAvailableValue
+            # Synthesize CAR `guid` from the offset (per-image unique; the store
+            # namespaces it by source image). ParentPath by pid stays a HEURISTIC
+            # until the store resolves parent_guid by offset (create-time ordered).
+            guid = f"proc-{offset:x}"
             yield (0, (
+                offset, guid,
                 pid, ppid, name,
                 image_path or na(),
                 command_line or na(),
@@ -169,6 +183,8 @@ class Processes(interfaces.plugins.PluginInterface):
     def run(self):
         return renderers.TreeGrid(
             [
+                ("Offset", int),
+                ("Guid", str),
                 ("PID", int),
                 ("PPID", int),
                 ("ImageFileName", str),
