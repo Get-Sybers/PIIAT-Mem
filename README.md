@@ -75,13 +75,21 @@ pip install .[native]    # also pull in volatility3 for --native
 
 ## As a submodule
 
-PIIAT-Mem is designed to drop into a larger pipeline as a git submodule: the
-parent repo builds the image from `docker/Dockerfile` and drives this package's
-`runner.run_plugin` directly — the runner, the `jsonl_dfir` renderer and the
-plugin set (`runner.ALL_PLUGINS`) live here once, so the parent adds only its own
-orchestration on top rather than a second copy. `run_plugin` takes an explicit
-`out_path`, a `symbols_online` flag, and `renderer` / `plugins_dir` overrides for
-exactly that. It is the memory-forensics engine behind the DX_DFIR volatility lane.
+PIIAT-Mem stays a standalone tool inside a larger pipeline: the parent repo
+builds the image from `docker/Dockerfile` and drives PIIAT-Mem **through its
+CLI** — one invocation per image, as an automated consumer, not by importing its
+internals. It never has to re-implement the runner, the `jsonl_dfir` renderer or
+the plugin set. Two flags exist for exactly that automated use:
+
+```
+piiat-mem -f mem.raw -o out/ --plugins windows.pslist,windows.piiat.processes --no-timeline
+piiat-mem --list-plugins        # the default plugin set, as JSON
+```
+
+`--no-timeline` writes only the raw `out/plugins/<plugin>.jsonl` (the pipeline
+ingests those and builds its own timeline downstream); `--list-plugins` lets a
+consumer discover the plugin names without hardcoding a second copy. It is the
+memory-forensics engine behind the DX_DFIR volatility lane.
 
 ## License
 

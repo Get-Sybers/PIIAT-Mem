@@ -19,12 +19,15 @@ All notable changes are documented here, following
   `dfir_registry.DfirRegistry` identifiers must switch to the new names.
 
 ### Added
-- `runner.ALL_PLUGINS` — the full plugin set the engine runs, exported so a
-  consumer (the DX_DFIR CAR lane) can extend it instead of keeping a second copy.
-- `runner.run_plugin` now takes `out_path` (exact output file), `symbols_online`
-  (keep the container network for the ISF fetch), and `renderer` / `plugins_dir`
-  overrides — so the engine can be driven directly by a parent pipeline. The CLI's
-  `--symbols-online` now flows through this param instead of monkeypatching
+- `--no-timeline` — write only the raw per-plugin JSONL under `<out>/plugins/`,
+  skipping the merged timeline. For automated consumers (e.g. the DX_DFIR CAR
+  lane) that ingest the raw output and build their own timeline downstream.
+- `--list-plugins` — print the default plugin set as a JSON list and exit, so a
+  consumer can name the plugins it wants without hardcoding a second copy.
+- `runner.ALL_PLUGINS` — the default plugin set, exported (also behind
+  `--list-plugins`).
+- `runner.run_plugin` / `run_all` gained a `symbols_online` param; the CLI's
+  `--symbols-online` now flows through it instead of monkeypatching
   `container.run`.
 
 ## [0.1.0] - 2026-08-28
