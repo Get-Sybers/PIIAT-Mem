@@ -1,15 +1,18 @@
 # PIIAT-Mem — Put It In A Timeline (Memory)
 
-Point it at a memory image; get a time-ordered **timeline** (CSV or JSON) built
-from [Volatility 3](https://github.com/volatilityfoundation/volatility3),
-including two custom DFIR plugins and a flat JSONL renderer. The analysis runs
-inside a **minimal hardened container** by default (no shell, no package
+Point it at a memory image; get a **MITRE CAR** event store and timeline, built
+from [Volatility 3](https://github.com/volatilityfoundation/volatility3). The
+pipeline is Plaso-shaped — **extract → normalize → store → output** — and the
+deliverable is finished [MITRE CAR](https://car.mitre.org/data_model/): every
+extractable record becomes a CAR **object** doing an **action** at a
+**timestamp**, carrying that object's canonical **properties**. The analysis
+runs inside a **minimal hardened container** by default (no shell, no package
 manager, uid 0 renamed and locked, `--cap-drop ALL --read-only --network none`),
 or natively against an installed Volatility 3.
 
 ```
-piiat-mem -f memory.raw -o out/                 # JSONL timeline (container backend)
-piiat-mem -f memory.raw -o out/ --format csv    # CSV timeline
+piiat-mem -f memory.raw -o out/                 # CAR store + wide JSONL timeline
+piiat-mem -f memory.raw -o out/ --format csv    # CAR store + one CSV per CAR object
 piiat-mem -f memory.raw -o out/ --native        # use an installed volatility3
 piiat-mem -f memory.raw -o out/ --symbols-online  # allow ISF symbol download (network)
 ```
@@ -17,30 +20,47 @@ piiat-mem -f memory.raw -o out/ --symbols-online  # allow ISF symbol download (n
 Output:
 
 ```
-out/plugins/<plugin>.jsonl   raw per-plugin Volatility output (one record per line)
-out/timeline.json            merged, time-sorted events (JSONL) — or timeline.csv
+out/plugins/<plugin>.jsonl   raw per-plugin Volatility output (traceability)
+out/car.db                   the CAR-event store (SQLite) — the primary artifact
+out/timeline.json            wide CAR timeline: timestamp, car_object, car_action,
+                             every CAR property (null or not), links + provenance
+out/car/<object>.csv         (--format csv) one CSV per CAR object instead
 ```
 
-Each timeline event is `{timestamp, plugin, artifact, pid, process, description, detail}`,
-sorted ascending. Records with no usable timestamp stay in the raw per-plugin
-JSONL but are not timelined.
+**Identity is definitive, never guessed.** A process's CAR `guid` is synthesized
+from its `_EPROCESS` offset — the kernel's reuse-proof object identity — because
+the OS reuses PIDs. Spoke events (threads, modules, flows, services) are linked
+to their owning process by PID **within a create-time window** and honestly
+marked `link_confidence="heuristic"`; inherited process context (user, exe, …)
+fills only null properties, never overwriting a natively-extracted value.
+Events with no timestamp (files, services, drivers from memory) live in the
+store and the CSVs but not on the timeline. Bound/listening sockets are CAR
+**socket** events (no connection, so no direction is asserted); actual
+connections are CAR **flow** events where, by stated convention, `src_*` is the
+LOCAL endpoint and `dest_*` the FOREIGN one — a memory snapshot cannot know the
+originator, so `network_direction` stays null and consumers must not infer it.
+See [docs/design/car-store.md](docs/design/car-store.md).
 
 ## What it runs
 
-Timestamped plugins feed the timeline:
+Each plugin's records normalize to one CAR object:
 
-| Plugin | Artifact | Time |
-|---|---|---|
-| `windows.piiat.processes` | process | process create time (psscan — finds unlinked/terminated too) |
-| `windows.pslist` | process | process create time (active list) |
-| `windows.dlllist` | module | module load time |
-| `windows.thrdscan` | thread | thread create time |
-| `windows.netscan` | network | socket created time |
-| `windows.sessions` | session | session create time |
-| `windows.piiat.registry` | registry | key last-write time |
+| Plugin | CAR object | action | time |
+|---|---|---|---|
+| `windows.piiat.processes` | process | create | create time (psscan — finds unlinked/terminated too) |
+| `windows.thrdscan` | thread | create | thread create time |
+| `windows.dlllist` | module | load | module load time |
+| `windows.modules` | driver | load | — (store-only) |
+| `windows.netscan` / `netstat` (connections) | flow | start | socket created time |
+| `windows.netscan` / `netstat` (bound/LISTENING) | socket | listen | socket created time |
+| `windows.filescan` | file | — | — (store-only) |
+| `windows.piiat.registry` | registry | value_edit | key last-write time |
+| `windows.svcscan` | service | — | — (store-only) |
+| `windows.sessions` | user_session | login | session create time |
 
-`windows.info`, `windows.svcscan`, `windows.filescan` and `windows.modules` are
-also dumped (no per-record time, so not timelined).
+`windows.pslist` still runs (it flags `Hidden` processes by contrast) and
+`banners.Banners` / `windows.info` become **image-context metadata** in the
+store's `image_context` table — they are not CAR objects.
 
 ### Custom plugins
 - **`windows.piiat.processes`** — one row per process via `psscan`
@@ -86,10 +106,11 @@ piiat-mem -f mem.raw -o out/ --plugins windows.pslist,windows.piiat.processes --
 piiat-mem --list-plugins        # the default plugin set, as JSON
 ```
 
-`--no-timeline` writes only the raw `out/plugins/<plugin>.jsonl` (the pipeline
-ingests those and builds its own timeline downstream); `--list-plugins` lets a
-consumer discover the plugin names without hardcoding a second copy. It is the
-memory-forensics engine behind the DX_DFIR volatility lane.
+`--no-timeline` skips only the rendered views (timeline/CSVs) — the raw
+`out/plugins/<plugin>.jsonl` and the `car.db` store are always written (a
+consumer may ingest either); `--list-plugins` lets a consumer discover the
+plugin names without hardcoding a second copy. It is the memory-forensics
+engine behind the DX_DFIR volatility lane.
 
 ## License
 

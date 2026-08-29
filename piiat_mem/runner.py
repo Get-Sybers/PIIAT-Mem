@@ -28,8 +28,9 @@ PLUGINS_DIR = os.path.join(REPO, "plugins")
 
 DEFAULT_IMAGE = "dfir/volatility:latest"
 
-# Plugins whose records carry a timestamp — the ones the timeline is built from.
-# (Order preserved; the two windows.piiat.* plugins are the custom ones in ./plugins/windows/piiat.)
+# Plugins whose records carry a timestamp. (The timeline itself is now derived
+# from the CAR store — see cli.build_store; order preserved; the two
+# windows.piiat.* plugins are the custom ones in ./plugins/windows/piiat.)
 TIMELINE_PLUGINS = [
     "windows.piiat.processes",        # process create times (psscan; unlinked too)
     "windows.pslist",                 # process create times (active list)
@@ -40,7 +41,10 @@ TIMELINE_PLUGINS = [
     "windows.piiat.registry",         # registry key last-write times
 ]
 # Plugins with no per-record time — still dumped for completeness (not timelined).
-CONTEXT_PLUGINS = ["windows.info", "windows.svcscan", "windows.filescan", "windows.modules"]
+# banners.Banners is format-agnostic (works with no symbols) and, like
+# windows.info, becomes image-context metadata in the CAR store.
+CONTEXT_PLUGINS = ["banners.Banners", "windows.info", "windows.svcscan",
+                   "windows.filescan", "windows.modules"]
 # The full set this tool runs by default; exported (and surfaced by
 # ``piiat-mem --list-plugins``) so a consumer can name the plugins it wants.
 ALL_PLUGINS = TIMELINE_PLUGINS + CONTEXT_PLUGINS

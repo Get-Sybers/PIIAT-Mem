@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "piiat-mem"
-version = "0.2.0"
-description = "Put It In A Timeline (Memory) — a memory image to a Volatility 3 timeline (CSV/JSON), with DFIR plugins and a hardened container."
+version = "0.3.0"
+description = "Put It In A Timeline (Memory) — a memory image to a MITRE CAR event store and timeline (Volatility 3, DFIR plugins, hardened container)."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
@@ -24,6 +24,10 @@ piiat-mem = "piiat_mem.cli:main"
 
 [tool.setuptools]
 packages = ["piiat_mem"]
-# ship the runtime assets so an installed copy can still find them
+# ship the runtime assets so an installed copy can still find them (the custom
+# plugins live nested at plugins/windows/piiat/ — glob each level explicitly,
+# setuptools package-data does not expand **)
 [tool.setuptools.package-data]
-"*" = ["../plugins/*.py", "../jsonl_dfir_renderer.py"]
+piiat_mem = ["car_data_model.json"]
+"*" = ["../plugins/*.py", "../plugins/windows/*.py",
+       "../plugins/windows/piiat/*.py", "../jsonl_dfir_renderer.py"]

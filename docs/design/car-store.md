@@ -3,8 +3,8 @@
 Tracks epic #1. This is the **relational design** the store is built on: the CAR
 objects, what makes each event unique, how the objects relate, and the identity
 key each object needs to **inherit** properties from a related entry. Source of
-truth for objects / actions / properties: `car_data_model.json` (repo root,
-MITRE's own file).
+truth for objects / actions / properties: `piiat_mem/car_data_model.json`
+(vendored; regenerated from MITRE's own mitre-attack/car repo — see §7).
 
 Scope: the **PIIAT-Mem processor** only. CAR-at-query-time still applies to the
 artefacts we don't own; PIIAT-Mem is ours, so it emits finished CAR.
@@ -20,7 +20,8 @@ join-able but carry no time.
 | process | `windows.piiat.processes` | `pid` | create | CreateTime | yes |
 | thread | `windows.thrdscan` | `tgt_pid` + `tgt_tid` | create | create time | yes |
 | module | `windows.dlllist` | `pid` + `module_path` (`base_address`) | load | LoadTime | yes |
-| flow | `windows.netscan` / `netstat` | `pid` + 5-tuple | start / end | Created | yes |
+| flow | `windows.netscan` / `netstat` (connected rows) | protocol + 5-tuple | start | Created | yes |
+| socket | `windows.netscan` / `netstat` (bound/LISTENING rows) | protocol + local endpoint + pid | listen | Created | yes |
 | user_session | `windows.sessions` | `logon_id` (+ `user`) | login | create time | yes |
 | registry | `windows.piiat.registry` | `hive`+`key`+`value` | edit | LastWrite | yes |
 | driver | `windows.modules` | `image_path` + `base_address` | load | — | no (store-only) |
@@ -121,7 +122,9 @@ the reused PID:
 
 - **process `(guid = _EPROCESS offset)`** — `pid`+`create_time` only as a fallback
 - thread `(_ETHREAD offset, tgt_tid)` · module `(owning guid, base_address|module_path)`
-- flow `(socket offset; else pid + 5-tuple)` · driver `(image_path|module_name, base_address)`
+- flow `(protocol + 5-tuple)` · socket `(protocol, local endpoint, pid)` — NOT the
+  scan offset: netscan's physical and netstat's virtual offsets aren't comparable,
+  and dual-stack twins share one offset · driver `(image_path|module_name, base_address)`
 - registry `(hive, key, value, last_write)` · user_session `(login_id|user, time)`
 - file `(file_path)` · service `(name)`
 
@@ -164,5 +167,9 @@ use the old names and need the same alignment (deferred — see the volatility l
 
 ---
 
-**Next:** Phase 2 (extract → normalize → store) implements §5 tables + the
-per-plugin → CAR maps + the §3 enrichment; Phase 3 (output) implements §6.
+**Status:** implemented (v0.3.0). Phase 2 = `mappings.py` + `normalize.py` +
+`enrich.py` + `store.py`; Phase 3 = `timeline.py` (wide JSONL + per-object CSVs);
+wired in `cli.build_store`. §3's "definitive" tier for thread/module links (the
+owning-`_EPROCESS` offset emitted by custom plugins) remains future work — those
+links are currently produced by the create-time-window PID join and marked
+`heuristic`, as designed.

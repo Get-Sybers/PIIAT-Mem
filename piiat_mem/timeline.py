@@ -1,126 +1,57 @@
-"""Turn per-plugin JSONL into a single time-ordered timeline.
+"""Output stage — derive the deliverables from the CAR-event store (epic #1, phase 3).
 
-Each Volatility record that carries a timestamp becomes one timeline event
-``{timestamp, plugin, artifact, description, pid, process, detail}``; events are
-sorted ascending by time. Records with no usable timestamp are dropped from the
-timeline (they remain in the raw ``plugins/<plugin>.jsonl``).
+The store (car.db) is the primary artifact; this module is the psort-analogue
+that renders it:
+
+- **wide JSONL timeline** (`timeline.json`) — one line per TIMESTAMPED CAR event:
+  `timestamp`, `car_object`, `car_action`, the link columns
+  (`guid`, `owning_guid`, `parent_guid`, `link_confidence`), provenance
+  (`source_plugin`, `source_image`), and **every CAR property across every
+  object** (the model superset), null where the object doesn't carry it.
+- **per-object CSVs** (`car/<object>.csv`) — one file per CAR object that has
+  rows: the event header plus that object's own canonical properties.
+
+Store-only events (no timestamp — file/service/driver from memory) appear in the
+CSVs but not the timeline, exactly as designed (docs/design/car-store.md §6).
 """
 from __future__ import annotations
 
 import csv
 import json
 import os
-import re
 
-# Candidate timestamp fields across the timeline plugins, best-first.
-_TS_FIELDS = ["CreateTime", "LoadTime", "Created", "LastWrite", "Create Time",
-              "CreatedTime", "GenerationTime", "Time"]
-_EPOCH_ZERO = re.compile(r"^(1601-01-01|1970-01-01|0001-01-01)")
+from . import carmodel
 
-# plugin -> (artifact label, how to describe a record)
-_ARTIFACT = {
-    "windows.piiat.processes": "process",
-    "windows.pslist": "process",
-    "windows.pstree": "process",
-    "windows.dlllist": "module",
-    "windows.modules": "driver",
-    "windows.thrdscan": "thread",
-    "windows.netscan": "network",
-    "windows.netstat": "network",
-    "windows.sessions": "session",
-    "windows.piiat.registry": "registry",
-    "windows.svcscan": "service",
-    "windows.filescan": "file",
-}
+_META = ["timestamp", "car_object", "car_action", "guid", "owning_guid",
+         "parent_guid", "link_confidence", "source_plugin", "source_image"]
 
 
-def _plugin_of(path: str) -> str:
-    return os.path.basename(path).rsplit(".jsonl", 1)[0]
-
-
-def _timestamp(rec: dict):
-    for f in _TS_FIELDS:
-        v = rec.get(f)
-        if v in (None, "", "-"):
-            continue
-        s = str(v)
-        if _EPOCH_ZERO.match(s):        # Volatility's "no time" sentinel
-            continue
-        return s
-    return None
-
-
-def _describe(plugin: str, rec: dict) -> tuple[str, str, str]:
-    """Return (artifact, description, process) for a record."""
-    art = _ARTIFACT.get(plugin, plugin.split(".")[0])
-    pid = rec.get("PID") or rec.get("Pid") or ""
-    proc = rec.get("Process") or rec.get("ImageFileName") or rec.get("Owner") or ""
-    if art == "process":
-        desc = rec.get("Path") or rec.get("ImageFileName") or rec.get("CommandLine") or ""
-    elif art == "module":
-        desc = rec.get("Path") or rec.get("Name") or ""
-    elif art == "driver":
-        desc = rec.get("Path") or rec.get("Name") or ""
-    elif art == "thread":
-        desc = f"tid={rec.get('TID','')} start={rec.get('Win32StartPath') or rec.get('Win32StartAddress','')}"
-    elif art == "network":
-        desc = (f"{rec.get('Proto','')} {rec.get('LocalAddr','')}:{rec.get('LocalPort','')}"
-                f" -> {rec.get('ForeignAddr','')}:{rec.get('ForeignPort','')} {rec.get('State','')}").strip()
-    elif art == "session":
-        desc = f"session {rec.get('Session ID','')} {rec.get('User Name','') or rec.get('Process','')}"
-    elif art == "registry":
-        desc = f"{rec.get('Key','')}\\{rec.get('ValueName','')}".rstrip("\\")
-    else:
-        desc = rec.get("Name") or rec.get("Path") or ""
-    return art, str(desc), str(proc)
-
-
-def build(plugin_paths: list[str]) -> list[dict]:
-    """Read the given per-plugin JSONL files -> a time-sorted list of events."""
-    events: list[dict] = []
-    for path in plugin_paths:
-        if not os.path.isfile(path):
-            continue
-        plugin = _plugin_of(path)
-        with open(path, encoding="utf-8", errors="replace") as fh:
-            for line in fh:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    rec = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                ts = _timestamp(rec)
-                if not ts:
-                    continue
-                art, desc, proc = _describe(plugin, rec)
-                events.append({
-                    "timestamp": ts,
-                    "plugin": plugin,
-                    "artifact": art,
-                    "pid": rec.get("PID") or rec.get("Pid") or "",
-                    "process": proc,
-                    "description": desc,
-                    "detail": json.dumps(rec, sort_keys=True, default=str),
-                })
-    events.sort(key=lambda e: e["timestamp"])
-    return events
-
-
-_COLUMNS = ["timestamp", "plugin", "artifact", "pid", "process", "description", "detail"]
-
-
-def write_csv(events: list[dict], path: str) -> None:
-    with open(path, "w", newline="", encoding="utf-8") as fh:
-        w = csv.DictWriter(fh, fieldnames=_COLUMNS, extrasaction="ignore")
-        w.writeheader()
-        w.writerows(events)
-
-
-def write_json(events: list[dict], path: str) -> None:
-    """One JSON event per line (JSONL) — stream-friendly and ingest-ready."""
+def write_timeline_json(store, path: str) -> int:
+    """The wide CAR timeline: every property of every object, null or not."""
+    superset = carmodel.all_fields()
+    cols = _META + [f for f in superset if f not in _META]
+    n = 0
     with open(path, "w", encoding="utf-8") as fh:
-        for e in events:
-            fh.write(json.dumps(e, sort_keys=True, default=str))
+        for ev in store.iter_timeline():
+            row = {c: ev.get(c) for c in cols}
+            fh.write(json.dumps(row, sort_keys=False, default=str))
             fh.write("\n")
+            n += 1
+    return n
+
+
+def write_object_csvs(store, out_dir: str) -> dict[str, int]:
+    """One CSV per CAR object that has rows: header + the object's properties."""
+    os.makedirs(out_dir, exist_ok=True)
+    written = {}
+    for obj, count in store.counts().items():
+        cols = [c for c in _META if c != "car_object"] \
+            + [f for f in carmodel.fields(obj) if f not in _META]
+        path = os.path.join(out_dir, f"{obj}.csv")
+        with open(path, "w", newline="", encoding="utf-8") as fh:
+            w = csv.DictWriter(fh, fieldnames=cols, extrasaction="ignore")
+            w.writeheader()
+            for ev in store.iter_object(obj):
+                w.writerow({c: ev.get(c) for c in cols})
+        written[obj] = count
+    return written
