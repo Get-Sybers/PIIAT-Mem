@@ -76,9 +76,12 @@ pip install .[native]    # also pull in volatility3 for --native
 ## As a submodule
 
 PIIAT-Mem is designed to drop into a larger pipeline as a git submodule: the
-parent repo builds the image from `docker/Dockerfile` and points its own runner
-at `plugins/` and `jsonl_dfir_renderer.py`. It is the memory-forensics engine
-behind the DX_DFIR volatility lane.
+parent repo builds the image from `docker/Dockerfile` and drives this package's
+`runner.run_plugin` directly — the runner, the `jsonl_dfir` renderer and the
+plugin set (`runner.ALL_PLUGINS`) live here once, so the parent adds only its own
+orchestration on top rather than a second copy. `run_plugin` takes an explicit
+`out_path`, a `symbols_online` flag, and `renderer` / `plugins_dir` overrides for
+exactly that. It is the memory-forensics engine behind the DX_DFIR volatility lane.
 
 ## License
 

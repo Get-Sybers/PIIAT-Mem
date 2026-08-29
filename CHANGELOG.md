@@ -18,6 +18,15 @@ All notable changes are documented here, following
   Anything selecting the old `dfir_processes.DfirProcesses` /
   `dfir_registry.DfirRegistry` identifiers must switch to the new names.
 
+### Added
+- `runner.ALL_PLUGINS` — the full plugin set the engine runs, exported so a
+  consumer (the DX_DFIR CAR lane) can extend it instead of keeping a second copy.
+- `runner.run_plugin` now takes `out_path` (exact output file), `symbols_online`
+  (keep the container network for the ISF fetch), and `renderer` / `plugins_dir`
+  overrides — so the engine can be driven directly by a parent pipeline. The CLI's
+  `--symbols-online` now flows through this param instead of monkeypatching
+  `container.run`.
+
 ## [0.1.0] - 2026-08-28
 
 ### Added

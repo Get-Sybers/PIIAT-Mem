@@ -41,13 +41,11 @@ def main(argv: list[str] | None = None) -> int:
     os.makedirs(symbols, exist_ok=True)
     plugins = args.plugins.split(",") if args.plugins else None
 
-    # symbols-online lifts the container's network isolation for ISF fetch
-    if args.symbols_online and not args.native:
-        _patch_network()
-
     sys.stderr.write(f"piiat-mem {__version__}: {args.memory} -> {args.out} ({args.format})\n")
+    # symbols-online lifts the container's network isolation for the ISF fetch.
     results = runner.run_all(args.memory, args.out, plugins=plugins,
-                             symbols_dir=symbols, image=args.image, native=args.native)
+                             symbols_dir=symbols, image=args.image, native=args.native,
+                             symbols_online=args.symbols_online)
     ok = sum(1 for r in results if r["ok"])
     for r in results:
         mark = "ok " if r["ok"] else "ERR"
@@ -65,13 +63,6 @@ def main(argv: list[str] | None = None) -> int:
         sys.stderr.write("no plugin produced output — is the image built (or --native volatility3 installed)?\n")
         return 1
     return 0
-
-
-def _patch_network():
-    """Flip container.run to keep the network for this process (ISF fetch)."""
-    from . import container
-    orig = container.run
-    container.run = lambda image, after=(), **kw: orig(image, after, **{**kw, "network": True})
 
 
 if __name__ == "__main__":
