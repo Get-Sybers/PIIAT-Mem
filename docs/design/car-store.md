@@ -54,39 +54,76 @@ Foreign keys:
 - `service.pid  → process.pid`    · `service.ppid → process.pid`
 - `user_session.user → process.user` (weak; or `logon_id` where present)
 
-## 3. Inheritance — the key each object needs to inherit related properties
+The PIDs above are the *surface* the plugins expose. Because PIDs are **reused**,
+the real join is on process **`guid` (= `_EPROCESS` offset)**, with PID only as a
+fallback — see §3.
 
-A spoke event inherits its **process context** — `exe, image_path, command_line,
-user, sid, signer, parent_exe, parent_image_path, fqdn, hostname` — by joining
-`pid → process.pid`. `process` inherits parent paths via `ppid`. Inheritance is a
-LEFT JOIN that fills a property **only where the object's own value is null** —
-never overwriting a natively-supplied value.
+## 3. Inheritance — when can a property *definitively* be said to belong?
 
-| object | key it must carry | inherits (from) | does memory supply the key? |
-|---|---|---|---|
-| process | `ppid` | parent_exe / parent_image_path (parent process) | yes (PPID); our plugin also resolves ParentPath natively |
-| thread | `tgt_pid` (+ `tgt_tid`) | exe, image_path, user, command_line (process) | yes (PID / TID) |
-| module | `pid` | exe, image_path, user (process) | yes (PID) |
-| flow | `pid` | exe, image_path, user (process) | yes (PID / Owner) |
-| service | `pid` | exe, image_path, user (process) | yes (PID) |
-| file | `pid` | exe, user (process) | **no** — `filescan` carries no pid → stays null (honest gap) |
-| registry | — | user | via **hive path** (`NTUSER.DAT` → user), not a join |
-| user_session | `user` / `logon_id` | *is* the user context process rows join to | user yes; logon_id sometimes |
-| driver | — | — | kernel-global; hostname/fqdn only |
+The logical test: **object A's property may be attributed to object B only if A
+and B share a key that identifies the *same entity instance* beyond doubt.** A
+non-unique key is a guess, not a proof.
 
-**The only inheritance join key memory reliably provides is `pid`** (plus `ppid`
-for the process self-join and `user` for sessions). So `pid` is the store's
-central foreign key, and `process` is the parent every timelineable object
-enriches from.
+**`pid` is not that key.** The OS **reuses** PIDs — after a process exits, its PID
+is handed to a new, unrelated process. So a `pid` match in a memory image can join
+across two *different* process instances. Attribution on bare `pid` is a
+**heuristic**, never definitive.
+
+**MITRE CAR already says so.** The authoritative CAR `process` object identifies a
+process by **`guid`** ("global unique identifier for the initiating process"),
+with **`parent_guid`** / **`target_guid`** for the parent and access-target links —
+reuse-immune identities, distinct from `pid`/`ppid`. (The local
+`car_data_model.json` is a 9-object subset that omits `guid` — see §7.)
+
+**Memory has no Sysmon `guid`** (it is not stored in `_EPROCESS`). The
+memory-native unique identity is the **`_EPROCESS` offset** — every process object
+has a unique address in the image, and the kernel itself links threads, modules
+and handles to a process **by pointer to that object**, not by PID. So:
+
+> PIIAT-Mem **synthesizes CAR `guid` = the `_EPROCESS` offset** (the process's
+> kernel-object identity). That becomes the definitive join key; `pid` is demoted
+> to a plain attribute.
+
+**Definitive vs heuristic, per link** — a spoke inherits process context
+(`exe, image_path, command_line, user, sid, parent_*, fqdn, hostname`) via a
+LEFT JOIN that fills a property **only where the spoke's own value is null**:
+
+| link | what memory actually gives | verdict |
+|---|---|---|
+| module → process | `dlllist` walks **each process's** PEB — the row is *produced from* that `_EPROCESS`, so its offset is known at extraction | **definitive** (carry the owning offset) |
+| thread → process | `thrdscan` gives the thread offset + `pid`; the owning `_EPROCESS` pointer is reachable but not currently emitted | **definitive if** we emit the owning-`_EPROCESS` offset; else `pid` = heuristic |
+| flow → process | `netscan` gives owner `pid` only | **heuristic** (pid) |
+| service → process | `svcscan` gives `pid` only | **heuristic** (pid) |
+| process → parent | `ppid` is a *recorded* PID; the real parent may be dead/reused | **heuristic**; `parent_guid` from the parent `_EPROCESS` pointer (create-time ordered) is definitive |
+| file → process | `filescan` finds global FILE_OBJECTs with **no owner** | **none** — needs handle enumeration; stays null |
+| registry → user | the hive's **file path** (`…\<user>\NTUSER.DAT`) *is* that user's | **definitive by path** (not a join) |
+| user_session → process | shares only `user` (+ time) | **heuristic** |
+
+**Rule for the store:** key `process` on **`guid` (= `_EPROCESS` offset)**; carry
+`pid`/`ppid` as attributes only. Populate a spoke's inherited properties by joining
+on `guid` and mark those rows **definitive**; where only `pid` is available, join
+on `pid` disambiguated by a create-time window and record
+**`link_confidence = "heuristic"`** — never assert a reused-PID match as fact. Our
+current process plugin resolves `ParentPath` by a bare PID→path map (§ processes.py);
+that is a heuristic and Phase 2 replaces it with the offset/`parent_guid` link.
+
+**Consequence for extraction (Phase 2):** the process plugin must emit the
+`_EPROCESS` **`Offset`** (it does not today) so `guid` can be synthesized; a
+*definitive* thread/module link needs the owning-`_EPROCESS` offset emitted too
+(custom plugins that follow the pointer) — otherwise those links are honestly
+marked heuristic.
 
 ## 4. What makes an event unique (distinct entry AND join target)
 
-Composite identity per object = `(car_object, <identity>, timestamp, action)`:
+Composite identity per object = `(car_object, <identity>, timestamp, action)`.
+Where the object's identity IS a memory object, the offset is the identity — not
+the reused PID:
 
-- process `(pid, create_time)` · thread `(tgt_pid, tgt_tid, create_time)`
-- module `(pid, base_address|module_path, load_time)` · flow `(pid, proto, src_ip, src_port, dest_ip, dest_port, time)`
+- **process `(guid = _EPROCESS offset)`** — `pid`+`create_time` only as a fallback
+- thread `(_ETHREAD offset, tgt_tid)` · module `(owning guid, base_address|module_path)`
+- flow `(socket offset; else pid + 5-tuple)` · driver `(image_path|module_name, base_address)`
 - registry `(hive, key, value, last_write)` · user_session `(logon_id|user, time)`
-- driver `(image_path|module_name, base_address)` · file `(file_path)` · service `(name)`
+- file `(file_path)` · service `(name)`
 
 ## 5. Store schema (SQLite, relational)
 
@@ -94,21 +131,34 @@ One **table per object** — its CAR properties (all nullable) — plus a common
 event header on every table:
 
 ```
-event_id (pk) · timestamp · car_object · car_action · source_plugin · source_image · _native (json: non-CAR fields kept, never faked into CAR columns)
+event_id (pk) · timestamp · car_object · car_action · guid · pid · owning_guid · link_confidence · source_plugin · source_image · _native (json: non-CAR fields kept, never faked into CAR columns)
 ```
 
-`process.pid` is the shared join column; the §2 FK columns drive the §3
-enrichment. Objects with no timestamp still populate their table (join targets)
-but never reach the timeline.
+`guid` (= `_EPROCESS` offset) is the process's identity and the shared join
+column; `owning_guid` on a spoke is the FK to its process; `pid` is a plain
+attribute. `link_confidence ∈ {definitive, heuristic}` records how an inherited
+property was attributed (§3). Objects with no timestamp still populate their
+table (join targets) but never reach the timeline.
 
 ## 6. Output (derived from the store)
 
 - **per-object CSV** — `SELECT * FROM <object>` per table (that object's properties).
 - **wide JSONL timeline** — `UNION ALL` across every object, projected onto the
   full property superset (absent properties → null), each row tagged
-  `car_object` / `car_action`, `ORDER BY timestamp`. Only timestamped rows appear;
-  file / service / driver without a time remain store-only (still enrichment
-  join targets).
+  `car_object` / `car_action` (and `link_confidence`), `ORDER BY timestamp`. Only
+  timestamped rows appear; file / service / driver without a time remain
+  store-only (still enrichment join targets).
+
+## 7. Note — car_data_model.json vs. the authoritative CAR model
+
+The repo's `car_data_model.json` is a **9-object subset** and, on `process`, omits
+the identity fields the live CAR model defines — **`guid`, `parent_guid`,
+`target_guid`** (and the `access` action). Those fields are exactly the
+reuse-immune identity §3 relies on. Two options, for the owner to decide:
+refresh `car_data_model.json` to the full MITRE model (car.mitre.org — 15 objects:
+adds authentication, email, http, socket, …), or keep the subset and have
+PIIAT-Mem add the synthesized `guid`/`parent_guid` columns regardless. Either way
+the store carries `guid`; this doc treats CAR's real identity model as the target.
 
 ---
 
