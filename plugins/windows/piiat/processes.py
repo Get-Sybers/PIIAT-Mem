@@ -1,6 +1,6 @@
 """Volatility 3 plugin: DFIR process records for the CAR data model.
 
-`windows.PIIAT_processes` — one row per process, enumerated with psscan
+`windows.piiat.processes` — one row per process, enumerated with psscan
 (pool-tag scanning) so UNLINKED / terminated processes a rootkit hid from the
 active list are still found. Each row carries what CarProcess wants and no single
 built-in plugin gives together:
@@ -25,7 +25,7 @@ DLLs resolve for unlinked processes too. Truly dead processes (invalid DTB) get
 empty fields but are still listed and flagged.
 
 Rendered by the jsonl_dfir renderer -> memory.VolatilityJson (Plugin =
-"windows.PIIAT_processes") -> CarProcess reads Record.Path/ParentPath/etc.
+"windows.piiat.processes") -> CarProcess reads Record.Path/ParentPath/etc.
 """
 import datetime
 
@@ -36,7 +36,7 @@ from volatility3.framework.objects import utility
 from volatility3.plugins.windows import pslist, psscan
 
 
-class PIIATProcesses(interfaces.plugins.PluginInterface):
+class Processes(interfaces.plugins.PluginInterface):
     """Process records (psscan) with full image path, parent path and loaded DLLs."""
 
     _required_framework_version = (2, 0, 0)

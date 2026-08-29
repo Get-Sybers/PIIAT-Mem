@@ -31,25 +31,25 @@ Timestamped plugins feed the timeline:
 
 | Plugin | Artifact | Time |
 |---|---|---|
-| `windows.PIIAT_processes` | process | process create time (psscan — finds unlinked/terminated too) |
+| `windows.piiat.processes` | process | process create time (psscan — finds unlinked/terminated too) |
 | `windows.pslist` | process | process create time (active list) |
 | `windows.dlllist` | module | module load time |
 | `windows.thrdscan` | thread | thread create time |
 | `windows.netscan` | network | socket created time |
 | `windows.sessions` | session | session create time |
-| `windows.PIIAT_registry` | registry | key last-write time |
+| `windows.piiat.registry` | registry | key last-write time |
 
 `windows.info`, `windows.svcscan`, `windows.filescan` and `windows.modules` are
 also dumped (no per-record time, so not timelined).
 
 ### Custom plugins
-- **`windows.PIIAT_processes`** — one row per process via `psscan`
+- **`windows.piiat.processes`** — one row per process via `psscan`
   (pool-tag scanning, so rootkit-unlinked processes are still found), each
   carrying PID/PPID, the full image path and command line from the PEB, the
   parent's full path, loaded DLLs, and a `Hidden` flag for processes the active
   list missed. It rebuilds the process address space from the DTB so the PEB
   resolves even for unlinked processes.
-- **`windows.PIIAT_registry`** — reads a RECmd-batch-style list of
+- **`windows.piiat.registry`** — reads a RECmd-batch-style list of
   high-value keys out of the hives resident in memory and emits one row per
   value (Hive, Key, ValueName, ValueType, ValueData, LastWrite). Override with
   `--plugins` or the plugin's `--targets`.

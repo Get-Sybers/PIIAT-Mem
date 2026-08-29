@@ -7,13 +7,14 @@ All notable changes are documented here, following
 ## [0.2.0] - 2026-08-29
 
 ### Changed
-- **Breaking:** the two custom plugins now live in the `windows` category to
-  match the built-in Volatility naming, and are referenced by the shorthand the
+- **Breaking:** the two custom plugins now live in a `windows.piiat` subpackage,
+  following the built-in Volatility naming (lowercase modules; registry-style
+  grouping like `windows.registry.*`), and are referenced by the shorthand the
   rest of the pipeline uses:
-  - `dfir_processes.DfirProcesses` → `windows.PIIAT_processes` (class
-    `PIIATProcesses`, now at `plugins/windows/PIIAT_processes.py`)
-  - `dfir_registry.DfirRegistry` → `windows.PIIAT_registry` (class
-    `PIIATRegistry`, now at `plugins/windows/PIIAT_registry.py`)
+  - `dfir_processes.DfirProcesses` → `windows.piiat.processes` (class
+    `Processes`, now at `plugins/windows/piiat/processes.py`)
+  - `dfir_registry.DfirRegistry` → `windows.piiat.registry` (class
+    `Registry`, now at `plugins/windows/piiat/registry.py`)
   Anything selecting the old `dfir_processes.DfirProcesses` /
   `dfir_registry.DfirRegistry` identifiers must switch to the new names.
 

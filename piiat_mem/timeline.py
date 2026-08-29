@@ -19,7 +19,7 @@ _EPOCH_ZERO = re.compile(r"^(1601-01-01|1970-01-01|0001-01-01)")
 
 # plugin -> (artifact label, how to describe a record)
 _ARTIFACT = {
-    "windows.PIIAT_processes": "process",
+    "windows.piiat.processes": "process",
     "windows.pslist": "process",
     "windows.pstree": "process",
     "windows.dlllist": "module",
@@ -28,7 +28,7 @@ _ARTIFACT = {
     "windows.netscan": "network",
     "windows.netstat": "network",
     "windows.sessions": "session",
-    "windows.PIIAT_registry": "registry",
+    "windows.piiat.registry": "registry",
     "windows.svcscan": "service",
     "windows.filescan": "file",
 }
