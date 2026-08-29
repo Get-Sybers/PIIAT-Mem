@@ -417,6 +417,32 @@ def test_dotted_computername_is_the_fqdn_l2t_rule():
     assert proc["fqdn"] == "HOST1.EXAMPLE.COM"           # the dotted name IS the fqdn
 
 
+def test_malfind_region_is_an_unbacked_module_timelined_at_owner():
+    p = _tag(_proc(10, 4, 0xa, "MsMpEng.exe", r"C:\W\MsMpEng.exe", "2020-01-01T00:00:10+00:00"))
+    m = _tag(normalize.normalize("windows.malfind", {
+        "PID": 10, "Process": "MsMpEng.exe", "Start VPN": 0x1a0000, "End VPN": 0x1a0fff,
+        "Protection": "PAGE_EXECUTE_READWRITE", "Tag": "VadS", "CommitCharge": 1,
+        "PrivateMemory": 1, "Notes": None, "Disasm": "56 57", "Hexdump": "56 57",
+        "File output": "Disabled"}))
+    assert m["car_object"] == "module" and m["car_action"] == "load"
+    assert m["guid"] == "module-10-1703936"                 # module-<pid>-<start vpn>
+    assert m["base_address"] == 0x1a0000
+    assert m.get("module_path") is None                     # unbacked — the injection tell
+    assert m["timestamp"] is None                           # no intrinsic time yet
+    # an access event on the SAME pid must not defeat the malfind PID link
+    # (access events live in the process object; they are not process instances)
+    noise = _tag(normalize.normalize("windows.piiat.access", {
+        "OwnerOffset": 0xa, "PID": 10, "ProcessName": "MsMpEng.exe", "HandleValue": 4,
+        "GrantedAccess": 0x1000, "TargetOffset": 0xa, "TargetPid": 10,
+        "TargetName": "MsMpEng.exe"}))
+    out = enrich.enrich([p, m, noise])
+    mod = [e for e in out if e["car_object"] == "module"][0]
+    assert mod["timestamp"] == "2020-01-01T00:00:10+00:00"  # anchored to owner -> timelined
+    assert mod["owning_guid"] == "proc-a"
+    assert mod["_native"]["Protection"] == "PAGE_EXECUTE_READWRITE"
+    assert mod["image_path"] == r"C:\W\MsMpEng.exe"         # owner image inherited
+
+
 def test_process_env_vars_and_thread_start_function_mapped():
     p = normalize.normalize("windows.piiat.processes", {
         "Offset": 0xa, "Guid": "proc-a", "PID": 10, "PPID": 4,

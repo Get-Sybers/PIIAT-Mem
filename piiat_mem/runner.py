@@ -50,7 +50,7 @@ TIMELINE_PLUGINS = [
 # windows.info, becomes image-context metadata in the CAR store.
 CONTEXT_PLUGINS = ["banners.Banners", "windows.info", "windows.svcscan",
                    "windows.filescan", "windows.piiat.files",
-                   "windows.piiat.access", "windows.modules"]
+                   "windows.piiat.access", "windows.malfind", "windows.modules"]
 # The full set this tool runs by default; exported (and surfaced by
 # ``piiat-mem --list-plugins``) so a consumer can name the plugins it wants.
 ALL_PLUGINS = TIMELINE_PLUGINS + CONTEXT_PLUGINS

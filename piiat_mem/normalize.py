@@ -144,6 +144,9 @@ def normalize(plugin: str, rec: dict) -> dict | None:
         "owning_guid": None,        # set in enrichment (create-time-window PID join)
         "parent_guid": None,        # set in enrichment
         "link_confidence": None,    # set in enrichment
+        # a timeless event (e.g. malfind region) that should be timelined at its
+        # owning process's create time — enrichment stamps it after the link.
+        "_ts_from_owner": bool(m.get("ts_from_owner")),
         "source_plugin": plugin,
         "_native": {k: rec.get(k) for k in m.get("keep", []) if k in rec},
     }

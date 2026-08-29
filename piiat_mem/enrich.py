@@ -226,11 +226,17 @@ def _host_identity(events: list[dict]) -> dict:
     return out
 
 
+def _is_process_create(ev: dict) -> bool:
+    # process CREATE rows are the real process instances; access events also
+    # live in the process object and must NOT count as processes for linking.
+    return ev["car_object"] == "process" and ev.get("car_action") == "create"
+
+
 def _process_index(events: list[dict]) -> dict:
-    """(image, pid) -> [process events sorted by create time ascending]."""
+    """(image, pid) -> [process CREATE events sorted by create time ascending]."""
     idx = defaultdict(list)
     for ev in events:
-        if ev["car_object"] == "process" and ev.get("pid") is not None:
+        if _is_process_create(ev) and ev.get("pid") is not None:
             idx[(ev.get("source_image"), int(ev["pid"]))].append(ev)
     for lst in idx.values():
         lst.sort(key=lambda e: e.get("timestamp") or "")
@@ -243,7 +249,7 @@ def _process_offset_index(events: list[dict]) -> dict:
     carrying the owning offset joins DEFINITIVELY — no PID-reuse ambiguity."""
     idx = {}
     for ev in events:
-        if ev["car_object"] != "process":
+        if not _is_process_create(ev):
             continue
         off = (ev.get("_native") or {}).get("Offset")
         if off is not None:
@@ -358,4 +364,8 @@ def enrich(events: list[dict]) -> list[dict]:
             ev["owning_guid"] = owner.get("guid")
             ev["link_confidence"] = confidence
             _inherit(ev, owner, obj_fields)
+            # a timeless event (malfind region) is placed on the timeline at its
+            # owning process's create time
+            if ev.get("_ts_from_owner") and not ev.get("timestamp") and owner.get("timestamp"):
+                ev["timestamp"] = owner["timestamp"]
     return events

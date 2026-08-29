@@ -70,6 +70,15 @@ All notable changes are documented here, following
   FILE_NAME form, `creation_time` from STANDARD_INFORMATION, and
   `previous_creation_time` where the FILE_NAME birth time differs — the
   timestomp tell recorded as data, the verdict left to the analyst.
+- **malfind → CAR module events on the timeline**: `windows.malfind` regions
+  normalize to CAR `module` events (unbacked code in a process — `base_address`
+  = region start, `image_path`/`module_path` null by nature, Protection/Tag/
+  Disasm/Hexdump in native), owner-linked and anchored to the owning process's
+  create time (a new `ts_from_owner` map flag) so they appear on the timeline.
+- **Fix:** process `access` events (which share the `process` object) were
+  polluting the PID-fallback and offset process indexes, silently defeating
+  offset-less links (e.g. malfind); the indexes now count only process `create`
+  events.
 - **`process.env_vars`** (PEB Environment block, capped excerpt) and
   **`thread.start_function`/Win32 variant** (pe_symbols export-name resolution)
   — the last provably-fillable audit items.
