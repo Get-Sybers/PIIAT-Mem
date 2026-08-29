@@ -4,6 +4,31 @@ All notable changes are documented here, following
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.0] - 2026-08-29
+
+First stable release. PIIAT-Mem turns a memory image into a **MITRE CAR** event
+store and timeline — Plaso-shaped (extract → normalize → enrich → store →
+output) — consolidating the 0.2–0.4 development arc into a stable interface:
+
+- The custom **`windows.piiat.*` plugin family** (processes, threads, modules,
+  files, network, sessions, registry): each spoke emits the owning `_EPROCESS`
+  offset for **definitive** process links — `guid` is the reuse-proof kernel
+  identity, never the reused PID.
+- A **SQLite CAR-event store** (the `.plaso` analogue) keyed on the vendored
+  `car_data_model.json` (MITRE's authoritative 13-object model), with a wide
+  JSONL timeline (`timestamp, car_object, car_action`, every property null or
+  not) and per-object CSVs.
+- **Audited field completeness**: every canonical CAR property is filled from the
+  image or is an honest null — host identity, process token identity / cwd /
+  integrity_level / env_vars, thread start_function, MFT-derived file times,
+  and process `access` events from handles.
+- **malfind as a timeline overlay** populated by store retrieval — a trigger,
+  not a stored record.
+- Hardened, network-isolated container backend; consumed by the DX_DFIR
+  volatility lane through this tool's CLI.
+
+Detailed change history for the pre-1.0 milestones is retained below.
+
 ## [0.4.0] - 2026-08-29
 
 ### Added

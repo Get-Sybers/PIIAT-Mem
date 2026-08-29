@@ -10,4 +10,4 @@ events; and the outputs (wide JSONL timeline / per-object CSVs) are derived view
 of the store. Runs the analysis inside a minimal hardened container by default,
 or natively against an installed Volatility 3.
 """
-__version__ = "0.4.0"
+__version__ = "1.0.0"
