@@ -273,27 +273,6 @@ MAPPINGS = {
         },
         "keep": ["Size", "LoadCount", "Process"],
     },
-    # ---- malfind — a suspicious/injected memory REGION is unbacked executable
-    # code in a process's address space: a CAR module with NO image_path (that
-    # absence + the RWX Protection IS the injection tell). No intrinsic time, so
-    # it's anchored to the owning process's create time (ts_from_owner) to land
-    # on the timeline. Native fields (Protection/Tag/Disasm/Hexdump) carry the
-    # evidence; the verdict is the analyst's. windows.malfind is deprecated for
-    # windows.malware.malfind — both map identically.
-    "windows.malfind": {
-        "object": "module", "action": "load", "ts": None, "ts_from_owner": True,
-        "guid": {"fields": ["PID", "Start VPN"]}, "owning_pid": "PID",
-        "props": {"base_address": "Start VPN", "pid": "PID"},
-        "keep": ["Process", "Protection", "Tag", "End VPN", "CommitCharge",
-                 "PrivateMemory", "Notes", "Disasm", "Hexdump", "File output"],
-    },
-    "windows.malware.malfind": {
-        "object": "module", "action": "load", "ts": None, "ts_from_owner": True,
-        "guid": {"fields": ["PID", "Start VPN"]}, "owning_pid": "PID",
-        "props": {"base_address": "Start VPN", "pid": "PID"},
-        "keep": ["Process", "Protection", "Tag", "End VPN", "CommitCharge",
-                 "PrivateMemory", "Notes", "Disasm", "Hexdump", "File output"],
-    },
     # ---- driver — kernel-global; modules offset is identity, no owner. For a
     # driver, image_path IS the driver's own path (there is no owning process).
     "windows.modules": {

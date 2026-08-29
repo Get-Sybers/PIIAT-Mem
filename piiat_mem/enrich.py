@@ -364,8 +364,4 @@ def enrich(events: list[dict]) -> list[dict]:
             ev["owning_guid"] = owner.get("guid")
             ev["link_confidence"] = confidence
             _inherit(ev, owner, obj_fields)
-            # a timeless event (malfind region) is placed on the timeline at its
-            # owning process's create time
-            if ev.get("_ts_from_owner") and not ev.get("timestamp") and owner.get("timestamp"):
-                ev["timestamp"] = owner["timestamp"]
     return events

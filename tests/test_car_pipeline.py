@@ -417,30 +417,45 @@ def test_dotted_computername_is_the_fqdn_l2t_rule():
     assert proc["fqdn"] == "HOST1.EXAMPLE.COM"           # the dotted name IS the fqdn
 
 
-def test_malfind_region_is_an_unbacked_module_timelined_at_owner():
-    p = _tag(_proc(10, 4, 0xa, "MsMpEng.exe", r"C:\W\MsMpEng.exe", "2020-01-01T00:00:10+00:00"))
-    m = _tag(normalize.normalize("windows.malfind", {
+def test_malfind_overlay_retrieves_stored_process_not_persisted(tmp_path):
+    import json as _json
+    from piiat_mem import cli
+    # a real dump run leaves the process JSONL + the malfind JSONL on disk
+    plug = tmp_path / "plugins"; plug.mkdir()
+    (plug / "windows.piiat.processes.jsonl").write_text(_json.dumps({
+        "Offset": 0xa, "Guid": "proc-a", "PID": 10, "PPID": 4,
+        "ImageFileName": "MsMpEng.exe", "Path": r"C:\W\MsMpEng.exe", "CommandLine": "c",
+        "ParentPath": None, "CreateTime": "2020-01-01T00:00:10+00:00", "DllCount": 0,
+        "LoadedDlls": None, "Hidden": False, "Sid": None, "User": None, "LogonId": None,
+        "Cwd": None, "IntegrityLevel": None, "EnvVars": None}) + "\n")
+    (plug / "windows.malfind.jsonl").write_text(_json.dumps({
         "PID": 10, "Process": "MsMpEng.exe", "Start VPN": 0x1a0000, "End VPN": 0x1a0fff,
         "Protection": "PAGE_EXECUTE_READWRITE", "Tag": "VadS", "CommitCharge": 1,
-        "PrivateMemory": 1, "Notes": None, "Disasm": "56 57", "Hexdump": "56 57",
-        "File output": "Disabled"}))
-    assert m["car_object"] == "module" and m["car_action"] == "load"
-    assert m["guid"] == "module-10-1703936"                 # module-<pid>-<start vpn>
-    assert m["base_address"] == 0x1a0000
-    assert m.get("module_path") is None                     # unbacked — the injection tell
-    assert m["timestamp"] is None                           # no intrinsic time yet
-    # an access event on the SAME pid must not defeat the malfind PID link
-    # (access events live in the process object; they are not process instances)
-    noise = _tag(normalize.normalize("windows.piiat.access", {
-        "OwnerOffset": 0xa, "PID": 10, "ProcessName": "MsMpEng.exe", "HandleValue": 4,
-        "GrantedAccess": 0x1000, "TargetOffset": 0xa, "TargetPid": 10,
-        "TargetName": "MsMpEng.exe"}))
-    out = enrich.enrich([p, m, noise])
-    mod = [e for e in out if e["car_object"] == "module"][0]
-    assert mod["timestamp"] == "2020-01-01T00:00:10+00:00"  # anchored to owner -> timelined
-    assert mod["owning_guid"] == "proc-a"
-    assert mod["_native"]["Protection"] == "PAGE_EXECUTE_READWRITE"
-    assert mod["image_path"] == r"C:\W\MsMpEng.exe"         # owner image inherited
+        "PrivateMemory": 1, "Disasm": "56 57", "Hexdump": "56 57"}) + "\n")
+    st = cli.build_store(str(tmp_path), "img.mem")
+
+    # malfind is NOT persisted — the store has ONLY the process, no malfind module row
+    assert st.counts().get("module") is None
+    assert all(m["source_plugin"] != "windows.malfind" for m in st.iter_object("module"))
+
+    # the overlay RETRIEVES the stored process to populate the timeline entry
+    ov = timeline.malfind_overlay(st, str(tmp_path))
+    assert len(ov) == 1
+    e = ov[0]
+    assert e["car_object"] == "module" and e["car_action"] == "load"
+    assert e["owning_guid"] == "proc-a"                      # the stored process
+    assert e["image_path"] == r"C:\W\MsMpEng.exe"           # retrieved, not from malfind
+    assert e["timestamp"] == "2020-01-01T00:00:10+00:00"    # the stored create time
+    assert e["base_address"] == 0x1a0000                     # region detail from malfind
+    assert e["_native"]["Protection"] == "PAGE_EXECUTE_READWRITE"
+
+    # and it lands on the written timeline
+    tl_path = str(tmp_path / "timeline.json")
+    timeline.write_timeline_json(st, tl_path, out_dir=str(tmp_path))
+    tl = [_json.loads(l) for l in open(tl_path)]
+    mf = [r for r in tl if r["source_plugin"] == "windows.malfind"]
+    assert len(mf) == 1 and mf[0]["owning_guid"] == "proc-a"
+    st.close()
 
 
 def test_process_env_vars_and_thread_start_function_mapped():

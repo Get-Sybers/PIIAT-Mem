@@ -64,6 +64,12 @@ def build_store(out_dir: str, source_image: str) -> "store.CarStore":
             plugin = name[:-len(".jsonl")]
             if plugin in superseded:
                 continue
+            # malfind is NOT stored — it is a trigger, not a record. Its regions
+            # are joined against the stored processes at output time
+            # (timeline.malfind_overlay), so the timeline entry is populated from
+            # data we already extracted, not from malfind's own thin fields.
+            if plugin in timeline.MALFIND_PLUGINS:
+                continue
             records = _load_records(os.path.join(plug_dir, name))
             if not records:
                 continue
@@ -155,7 +161,7 @@ def main(argv: list[str] | None = None) -> int:
                          + "  (" + ", ".join(f"{o}.csv:{n}" for o, n in sorted(written.items())) + ")\n")
     else:
         tl_path = os.path.join(args.out, "timeline.json")
-        n = timeline.write_timeline_json(st, tl_path)
+        n = timeline.write_timeline_json(st, tl_path, out_dir=args.out)
         sys.stderr.write(f"{n} CAR timeline events -> {tl_path}\n")
     st.close()
 

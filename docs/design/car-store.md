@@ -194,6 +194,14 @@ mismatch, previous_creation_time — the timestomp tell). Remaining nulls are
 honest: hashes/signers (unmapped file bytes), call_trace (ephemeral), thread
 src_pid (not recorded), flow byte counters (not in a snapshot).
 
+**Triggers vs records (malfind):** malfind is a *trigger*, not a stored CAR
+record — it is never written to the store. At output, each flagged region is
+joined by PID to the process already in the store and a `module` timeline entry
+is *populated from that stored record* (identity/host/user/image + create-time),
+carrying only the region detail (address/Protection/disasm) natively. This is
+the store→retrieve pattern: memory-native evidence points at what to surface;
+the CAR fields come from what was already extracted.
+
 **Export dedup:** not needed. Enrichment's `_dedupe` (identity + action +
 target_guid + access_level) plus timestamp-gating leaves the exported timeline
 duplicate-free — measured 0 exact-duplicate rows on a real ~45k-event timeline;
