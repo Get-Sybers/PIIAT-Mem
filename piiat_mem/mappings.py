@@ -65,6 +65,19 @@ def is_bound_socket(rec) -> bool:
 
 PREDICATES = {"is_bound_socket": is_bound_socket}
 
+# A piiat.* plugin supersedes the built-in it improves on. When the NEW
+# plugin's JSONL is present in a run directory, the OLD one's is skipped at
+# store-build time: thread/module/network twins would mostly collapse in dedupe
+# anyway (shared identity), but user_session identity changed incompatibly
+# (LUID vs TS-session-number), so re-normalizing both would double-count every
+# logon. One rule for all four keeps the guarantee uniform.
+SUPERSEDES = {
+    "windows.piiat.threads": "windows.thrdscan",
+    "windows.piiat.modules": "windows.dlllist",
+    "windows.piiat.network": "windows.netscan",
+    "windows.piiat.sessions": "windows.sessions",
+}
+
 
 # --- the maps ---------------------------------------------------------------
 # guid: {"field": X}  -> the record already carries the guid in field X
@@ -114,8 +127,62 @@ MAPPINGS = {
             "image_path": "Path",
             "command_line": "CommandLine",
             "parent_exe": basename("ParentPath"), "parent_image_path": "ParentPath",
+            # token-derived identity (v0.4.0): the process's own SID and user —
+            # native extraction, not a weak join.
+            "user": "User", "sid": "Sid",
         },
-        "keep": ["Offset", "ImageFileName", "LoadedDlls", "DllCount", "Hidden"],
+        "keep": ["Offset", "ImageFileName", "LoadedDlls", "DllCount", "Hidden", "LogonId"],
+    },
+    # ---- the piiat.* family (v0.4.0): every spoke emits OwnerOffset — the
+    # owning _EPROCESS address — so enrichment links DEFINITIVELY, not by PID.
+    "windows.piiat.threads": {
+        "object": "thread", "action": "create", "ts": "CreateTime",
+        "guid": {"fields": ["Offset"]}, "owning_pid": "PID", "owning_offset": "OwnerOffset",
+        "props": {
+            "tgt_pid": "PID", "tgt_tid": "TID",
+            # address and module must come from the SAME source — mixing the
+            # Win32 address with the kernel StartPath would assert the address
+            # lives in that module (an injection false-negative). The Win32 pair
+            # is the user-mode truth; the kernel pair stays in _native.
+            "start_address": "Win32StartAddress",
+            "start_module": "Win32StartPath",
+            "start_module_name": basename("Win32StartPath"),
+            "stack_base": "StackBase", "stack_limit": "StackLimit",
+            "user_stack_base": "UserStackBase", "user_stack_limit": "UserStackLimit",
+        },
+        "keep": ["ExitTime", "StartAddress", "StartPath"],
+    },
+    "windows.piiat.modules": {
+        "object": "module", "action": "load", "ts": "LoadTime",
+        "guid": {"fields": ["PID", "Base"]}, "owning_pid": "PID", "owning_offset": "OwnerOffset",
+        "props": {
+            "module_path": "Path",
+            "module_name": "Name", "base_address": "Base", "pid": "PID",
+        },
+        "keep": ["Size", "LoadCount", "ProcessName"],
+    },
+    "windows.piiat.network": {
+        "variants": [("is_bound_socket", dict(_SOCKET_MAP, owning_offset="OwnerOffset"))],
+        "default": dict(_FLOW_MAP, owning_offset="OwnerOffset"),
+    },
+    "windows.piiat.files": {
+        # handle-enumerated files WITH owners — what filescan can never say.
+        # Identity is (FILE_OBJECT, observing process): several processes may
+        # hold handles to one file, and each observation is its own CAR event.
+        "object": "file", "action": None, "ts": None,
+        "guid": {"fields": ["FileObjectOffset", "PID"]},
+        "owning_pid": "PID", "owning_offset": "OwnerOffset",
+        "props": {"file_path": "Path", "file_name": basename("Path"), "pid": "PID"},
+        "keep": ["HandleValue", "GrantedAccess", "FileObjectOffset", "ProcessName"],
+    },
+    "windows.piiat.sessions": {
+        # one row per process; identity is the token's AuthenticationId LUID —
+        # the REAL CAR login_id (persists until logout), unlike the TS session
+        # number. Rows collapse to one login per LUID in enrichment.
+        "object": "user_session", "action": "login", "ts": "CreateTime",
+        "guid": {"fields": ["LogonId"]}, "owning_pid": "PID", "owning_offset": "OwnerOffset",
+        "props": {"user": "User", "login_id": "LogonId", "uid": "Sid"},
+        "keep": ["SessionId", "ProcessName", "Sid"],
     },
     # ---- thread — _ETHREAD offset is identity; owns via PID -----------------
     "windows.thrdscan": {
@@ -123,11 +190,12 @@ MAPPINGS = {
         "guid": {"fields": ["Offset"]}, "owning_pid": "PID",
         "props": {
             "tgt_pid": "PID", "tgt_tid": "TID",
-            "start_address": first("Win32StartAddress", "StartAddress"),
-            "start_module": first("Win32StartPath", "StartPath"),
-            "start_module_name": basename(first("Win32StartPath", "StartPath")),
+            # paired source only (see windows.piiat.threads)
+            "start_address": "Win32StartAddress",
+            "start_module": "Win32StartPath",
+            "start_module_name": basename("Win32StartPath"),
         },
-        "keep": ["ExitTime"],
+        "keep": ["ExitTime", "StartAddress", "StartPath"],
     },
     # ---- module — identity is (owning pid, base). CAR module.image_path is the
     # OWNING PROCESS's image (enrichment fills it); module_path is the DLL's own.

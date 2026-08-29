@@ -179,6 +179,38 @@ def test_module_image_path_left_null_then_inherited_from_owner():
     assert mod["owning_guid"] == "proc-a"
 
 
+def test_registry_user_from_sid_hive_via_profilelist():
+    profile = _tag(normalize.normalize("windows.piiat.registry", {
+        "Hive": r"\SystemRoot\System32\Config\SOFTWARE",
+        "Key": r"\REGISTRY\MACHINE\SOFTWARE\Microsoft\Windows NT\CurrentVersion"
+               r"\ProfileList\S-1-5-21-1474204758-2504895174-1356074821-1001",
+        "ValueName": "ProfileImagePath", "ValueData": r"C:\Users\Steve",
+        "ValueType": "REG_EXPAND_SZ", "LastWrite": "2019-01-28"}))
+    sid_row = _tag(normalize.normalize("windows.piiat.registry", {
+        "Hive": r"\REGISTRY\USER\S-1-5-21-1474204758-2504895174-1356074821-1001",
+        "Key": r"...\Software\Microsoft\Windows\CurrentVersion\Run",
+        "ValueName": "x", "ValueData": "y", "ValueType": "REG_SZ",
+        "LastWrite": "2019-01-29"}))
+    classes_row = _tag(normalize.normalize("windows.piiat.registry", {
+        "Hive": r"\REGISTRY\USER\S-1-5-21-1474204758-2504895174-1356074821-1001_Classes",
+        "Key": r"...\ms-settings\shell\open\command", "ValueName": "",
+        "ValueData": "cmd.exe", "ValueType": "REG_SZ", "LastWrite": "2019-01-29"}))
+    assert sid_row["user"] is None                    # not resolvable at normalize time
+    out = enrich.enrich([profile, sid_row, classes_row])
+    by_key = {e["key"]: e for e in out if e["car_object"] == "registry"}
+    assert by_key[sid_row["key"]]["user"] == "Steve"          # via ProfileList
+    assert by_key[classes_row["key"]]["user"] == "Steve"      # _Classes twin too
+    assert by_key[profile["key"]]["user"] is None             # machine hive stays null
+
+
+def test_registry_user_from_serviceprofiles_path():
+    ev = normalize.normalize("windows.piiat.registry", {
+        "Hive": r"\??\C:\Windows\ServiceProfiles\NetworkService\NTUSER.DAT",
+        "Key": r"...\Software\Classes", "ValueName": "x", "ValueData": "y",
+        "ValueType": "REG_SZ", "LastWrite": "2019-01-28"})
+    assert ev["user"] == "NetworkService"
+
+
 def test_registry_default_value_keeps_its_guid():
     ev = normalize.normalize("windows.piiat.registry", {
         "Hive": "SOFTWARE", "Key": "Microsoft\\Windows\\Run", "ValueName": "",
@@ -211,6 +243,135 @@ def test_process_image_path_never_a_bare_name():
     ev = _proc(10, 4, 0xa, "truncatedname14", None, "2020-01-01T00:00:10+00:00")
     assert ev["image_path"] is None                   # no faked path from EPROCESS name
     assert ev["exe"] == "truncatedname14"             # exe fallback is fine
+
+
+# ---- the piiat.* family: definitive owner links (v0.4.0) -------------------
+
+def test_owning_offset_links_definitively():
+    p = _tag(_proc(10, 4, 0xa, "x.exe", r"C:\x.exe", "2020-01-01T00:00:10+00:00"))
+    t = _tag(normalize.normalize("windows.piiat.threads", {
+        "Offset": 99, "OwnerOffset": 0xa, "PID": 10, "TID": 7,
+        "CreateTime": "2020-01-01T00:00:20+00:00",
+        "StackBase": 1000, "StackLimit": 900, "UserStackBase": 2000, "UserStackLimit": 1900}))
+    out = enrich.enrich([p, t])
+    th = [e for e in out if e["car_object"] == "thread"][0]
+    assert th["owning_guid"] == "proc-a"
+    assert th["link_confidence"] == "definitive"
+    assert th["stack_base"] == 1000 and th["user_stack_limit"] == 1900
+
+
+def test_owning_offset_miss_falls_back_to_pid_heuristic():
+    p = _tag(_proc(10, 4, 0xa, "x.exe", r"C:\x.exe", "2020-01-01T00:00:10+00:00"))
+    t = _tag(normalize.normalize("windows.piiat.threads", {
+        "Offset": 99, "OwnerOffset": 0xdead, "PID": 10, "TID": 7,   # freed owner
+        "CreateTime": "2020-01-01T00:00:20+00:00"}))
+    out = enrich.enrich([p, t])
+    th = [e for e in out if e["car_object"] == "thread"][0]
+    assert th["owning_guid"] == "proc-a"
+    assert th["link_confidence"] == "heuristic"
+
+
+def test_piiat_files_event_per_process_observation():
+    p = _tag(_proc(10, 4, 0xa, "x.exe", r"C:\x.exe", "2020-01-01T00:00:10+00:00"))
+    f1 = _tag(normalize.normalize("windows.piiat.files", {
+        "OwnerOffset": 0xa, "PID": 10, "ProcessName": "x.exe", "HandleValue": 4,
+        "FileObjectOffset": 0xF11E, "Path": r"\Device\HarddiskVolume2\secret.docx",
+        "GrantedAccess": 3}))
+    f2 = _tag(normalize.normalize("windows.piiat.files", {
+        "OwnerOffset": 0xb, "PID": 11, "ProcessName": "y.exe", "HandleValue": 8,
+        "FileObjectOffset": 0xF11E, "Path": r"\Device\HarddiskVolume2\secret.docx",
+        "GrantedAccess": 1}))
+    assert f1["guid"] != f2["guid"]        # per-(file, process) observation
+    out = enrich.enrich([p, f1, f2])
+    files = [e for e in out if e["car_object"] == "file"]
+    assert len(files) == 2                 # both observations survive
+    owned = [e for e in files if e["owning_guid"] == "proc-a"][0]
+    assert owned["link_confidence"] == "definitive"
+    assert owned["file_name"] == "secret.docx" and owned["pid"] == 10
+
+
+def test_piiat_sessions_luid_identity_and_native_process_user():
+    p = normalize.normalize("windows.piiat.processes", {
+        "Offset": 0xa, "Guid": "proc-a", "PID": 10, "PPID": 4,
+        "ImageFileName": "x.exe", "Path": r"C:\x.exe", "CommandLine": "c",
+        "ParentPath": None, "CreateTime": "2020-01-01T00:00:10+00:00",
+        "DllCount": 0, "LoadedDlls": None, "Hidden": False,
+        "Sid": "S-1-5-21-1-2-3-1001", "User": "Steve", "LogonId": "0x338f0"})
+    assert p["user"] == "Steve" and p["sid"] == "S-1-5-21-1-2-3-1001"  # native
+    s1 = _tag(normalize.normalize("windows.piiat.sessions", {
+        "OwnerOffset": 0xa, "PID": 10, "ProcessName": "x.exe", "SessionId": 1,
+        "LogonId": "0x338f0", "Sid": "S-1-5-21-1-2-3-1001", "User": "Steve",
+        "CreateTime": "2020-01-01T00:00:10+00:00"}))
+    s2 = _tag(normalize.normalize("windows.piiat.sessions", {
+        "OwnerOffset": 0xb, "PID": 11, "ProcessName": "y.exe", "SessionId": 1,
+        "LogonId": "0x338f0", "Sid": "S-1-5-21-1-2-3-1001", "User": "Steve",
+        "CreateTime": "2020-01-01T00:00:30+00:00"}))
+    s3 = _tag(normalize.normalize("windows.piiat.sessions", {
+        "OwnerOffset": 0xc, "PID": 12, "ProcessName": "svc.exe", "SessionId": 0,
+        "LogonId": "0x3e7", "Sid": "S-1-5-18", "User": "Local System",
+        "CreateTime": "2020-01-01T00:00:01+00:00"}))
+    out = enrich.enrich([_tag(p), s1, s2, s3])
+    sessions = sorted((e for e in out if e["car_object"] == "user_session"),
+                      key=lambda e: e["login_id"])
+    assert [s["login_id"] for s in sessions] == ["0x338f0", "0x3e7"]  # one per LUID
+    steve = [s for s in sessions if s["login_id"] == "0x338f0"][0]
+    assert steve["timestamp"] == "2020-01-01T00:00:10+00:00"  # earliest = login
+    assert steve["uid"] == "S-1-5-21-1-2-3-1001"
+
+
+def test_superseded_builtin_jsonl_skipped_when_piiat_output_present(tmp_path):
+    import json as _json
+    from piiat_mem import cli
+    plug = tmp_path / "plugins"; plug.mkdir()
+    # old windows.sessions rows AND new piiat.sessions rows for the SAME logon
+    (plug / "windows.sessions.jsonl").write_text(_json.dumps({
+        "Session ID": 1, "User Name": "HOST\\Steve", "Process ID": 10,
+        "Process": "x.exe", "Create Time": "2019-01-28T19:40:32+00:00"}) + "\n")
+    (plug / "windows.piiat.sessions.jsonl").write_text(_json.dumps({
+        "OwnerOffset": 10, "PID": 10, "ProcessName": "x.exe", "SessionId": 1,
+        "LogonId": "0x338f0", "Sid": "S-1-5-21-1-2-3-1001", "User": "Steve",
+        "CreateTime": "2019-01-28T19:40:32+00:00"}) + "\n")
+    st = cli.build_store(str(tmp_path), "img.mem")
+    assert st.counts().get("user_session") == 1        # no double-counted logon
+    row = next(st.iter_object("user_session"))
+    assert row["login_id"] == "0x338f0"                # the LUID identity won
+    st.close()
+
+
+def test_well_known_sid_user_is_canonical_store_wide():
+    p = normalize.normalize("windows.piiat.processes", {
+        "Offset": 0xa, "Guid": "proc-a", "PID": 10, "PPID": 4,
+        "ImageFileName": "svc.exe", "Path": r"C:\svc.exe", "CommandLine": "c",
+        "ParentPath": None, "CreateTime": "2020-01-01T00:00:10+00:00",
+        "DllCount": 0, "LoadedDlls": None, "Hidden": False,
+        "Sid": "S-1-5-19", "User": "NT Authority", "LogonId": "0x3e5"})
+    s = normalize.normalize("windows.piiat.sessions", {
+        "OwnerOffset": 0xa, "PID": 10, "ProcessName": "svc.exe", "SessionId": 0,
+        "LogonId": "0x3e5", "Sid": "S-1-5-19", "User": "LocalService",
+        "CreateTime": "2020-01-01T00:00:10+00:00"})
+    out = enrich.enrich([_tag(p), _tag(s)])
+    users = {e["car_object"]: e["user"] for e in out}
+    assert users["process"] == "Local Service"          # canonical, both tables
+    assert users["user_session"] == "Local Service"
+
+
+def test_tokenless_session_row_is_not_a_phantom_login():
+    s = _tag(normalize.normalize("windows.piiat.sessions", {
+        "OwnerOffset": 0xa, "PID": 10, "ProcessName": "x.exe", "SessionId": 1,
+        "LogonId": None, "Sid": None, "User": None,
+        "CreateTime": "2020-01-01T00:00:10+00:00"}))
+    out = enrich.enrich([s])
+    assert [e for e in out if e["car_object"] == "user_session"] == []
+
+
+def test_thread_start_module_never_mixed_source():
+    ev = normalize.normalize("windows.piiat.threads", {
+        "Offset": 1, "PID": 10, "TID": 7, "CreateTime": "2020-01-01T00:00:20+00:00",
+        "Win32StartAddress": 0xBAD, "Win32StartPath": None,   # injected: unbacked
+        "StartAddress": 0x100, "StartPath": r"\Windows\System32\ntdll.dll"})
+    assert ev["start_address"] == 0xBAD
+    assert ev.get("start_module") is None               # never the kernel pair's module
+    assert ev["_native"]["StartPath"] == r"\Windows\System32\ntdll.dll"
 
 
 # ---- store + output --------------------------------------------------------

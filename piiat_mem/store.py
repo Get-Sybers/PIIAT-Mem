@@ -24,8 +24,8 @@ import sqlite3
 
 from . import carmodel
 
-HEADER = ["timestamp", "car_action", "guid", "owning_pid", "owning_guid",
-          "parent_pid", "parent_guid", "link_confidence",
+HEADER = ["timestamp", "car_action", "guid", "owning_pid", "owning_offset",
+          "owning_guid", "parent_pid", "parent_guid", "link_confidence",
           "source_plugin", "source_image", "native"]
 
 

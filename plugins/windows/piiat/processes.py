@@ -19,6 +19,12 @@ built-in plugin gives together:
   LoadedDlls      the loaded modules' full paths (PEB load-order list)
   Hidden          true if psscan found it but the active list (pslist) did not
                   — i.e. an unlinked process, the reason to use psscan
+  Sid             the process token's USER SID (UserAndGroups[0]) — CAR `sid`
+  User            the SID resolved to a name: real accounts via the SOFTWARE
+                  hive's ProfileList, well-known/service SIDs via volatility's
+                  own tables (the getsids lookup)
+  LogonId         the token AuthenticationId LUID as a hex string — joins the
+                  process to its `user_session` (CAR `login_id`)
 
 A psscan process is found in the PHYSICAL layer, so `EPROCESS.get_peb()` /
 `load_order_modules()` (which build the process layer off `self.vol.layer_name`)
@@ -28,23 +34,34 @@ the KERNEL's Intel layer as the template, so the PEB, command line and loaded
 DLLs resolve for unlinked processes too. Truly dead processes (invalid DTB) get
 empty fields but are still listed and flagged.
 
+Token identity works the same way: a psscan process object is built on the
+physical layer with the kernel layer as its native layer, so `proc.Token`
+(an _EX_FAST_REF) dereferences through kernel virtual space; a terminated /
+smeared process whose token pages are gone gets NotAvailableValue — never a
+guessed identity.
+
 Rendered by the jsonl_dfir renderer -> memory.VolatilityJson (Plugin =
 "windows.piiat.processes") -> CarProcess reads Record.Path/ParentPath/etc.
 """
 import datetime
+import json
+import ntpath
+import os
+import re
 
 from volatility3.framework import constants, exceptions, interfaces, renderers
 from volatility3.framework.configuration import requirements
 from volatility3.framework.layers import intel
 from volatility3.framework.objects import utility
 from volatility3.plugins.windows import pslist, psscan
+from volatility3.plugins.windows.registry import hivelist
 
 
 class Processes(interfaces.plugins.PluginInterface):
     """Process records (psscan) with full image path, parent path and loaded DLLs."""
 
     _required_framework_version = (2, 0, 0)
-    _version = (1, 0, 0)
+    _version = (1, 1, 0)
 
     @classmethod
     def get_requirements(cls):
@@ -119,6 +136,83 @@ class Processes(interfaces.plugins.PluginInterface):
             pass
         return image_path, command_line, dlls
 
+    def _token_identity(self, proc):
+        """(user SID string, AuthenticationId LUID as int) from the process
+        token — (None, None) / partial where the token is unreadable (a
+        terminated psscan process whose token pages are gone)."""
+        try:
+            token = proc.Token.dereference().cast("_TOKEN")
+        except Exception:  # pylint: disable=broad-except
+            return None, None
+        sid = None
+        try:
+            # UserAndGroups[0] is the token's USER SID (the rest are groups).
+            for sid_string in token.get_sids():
+                sid = sid_string
+                break
+        except Exception:  # pylint: disable=broad-except
+            pass
+        logon_id = None
+        try:
+            luid = token.AuthenticationId
+            logon_id = (int(luid.HighPart) << 32) | int(luid.LowPart)
+        except Exception:  # pylint: disable=broad-except
+            pass
+        return sid, logon_id
+
+    def _sid_names(self):
+        """({sid: name}, [(compiled_re, name)]) for resolving SIDs to account
+        names — real local accounts from the SOFTWARE hive's ProfileList
+        (ProfileImagePath basename), well-known / service SIDs and the regex
+        fallbacks from volatility's own sids_and_privileges.json (the same
+        tables windows.getsids uses). Empty where unreadable."""
+        names = {}
+        sid_res = []
+        try:
+            for plugin_dir in constants.PLUGINS_PATH:
+                path = os.path.join(plugin_dir, "windows", "sids_and_privileges.json")
+                if not os.path.exists(path):
+                    continue
+                with open(path) as file_handle:
+                    data = json.load(file_handle)
+                names.update(data.get("well known", {}))
+                names.update(data.get("service sids", {}))
+                sid_res = [(re.compile(item[0]), item[1])
+                           for item in data.get("sids re", [])]
+                break
+        except Exception:  # pylint: disable=broad-except
+            pass
+        try:
+            for hive in hivelist.HiveList.list_hives(
+                    self.context, self.config_path, self.config["kernel"],
+                    filter_string="config\\software"):
+                try:
+                    profile_list = hive.get_key(
+                        "Microsoft\\Windows NT\\CurrentVersion\\ProfileList")
+                    for subkey in profile_list.get_subkeys():
+                        try:
+                            sid = str(subkey.get_name())
+                            for node in subkey.get_values():
+                                if node.get_name() != "ProfileImagePath":
+                                    continue
+                                data = node.decode_data()
+                                if not isinstance(data, bytes):
+                                    continue
+                                profile_path = data.decode(
+                                    "utf-16-le", "replace").rstrip("\x00")
+                                user = ntpath.basename(profile_path)
+                                if user:
+                                    # Well-known names win (S-1-5-18 is "Local
+                                    # System", not its "systemprofile" dir).
+                                    names.setdefault(sid, user)
+                        except Exception:  # pylint: disable=broad-except
+                            continue
+                except Exception:  # pylint: disable=broad-except
+                    continue
+        except Exception:  # pylint: disable=broad-except
+            pass
+        return names, sid_res
+
     def _generator(self):
         kernel = self.context.modules[self.config["kernel"]]
         kernel_layer = self.context.layers[kernel.layer_name]
@@ -156,18 +250,29 @@ class Processes(interfaces.plugins.PluginInterface):
                 create_time = proc.get_create_time()
             except Exception:  # pylint: disable=broad-except
                 create_time = None
+            sid, logon_id = self._token_identity(proc)
             if image_path:
                 path_by_pid[pid] = image_path
             records.append((offset, pid, ppid, name, image_path, command_line,
-                            create_time, dlls))
+                            create_time, dlls, sid, logon_id))
+
+        # SID -> account-name tables (ProfileList + well-known), built once.
+        sid_names, sid_res = self._sid_names()
 
         # Pass two: synthesize the guid, fill ParentPath from the pid->path map, emit.
-        for offset, pid, ppid, name, image_path, command_line, create_time, dlls in records:
+        for (offset, pid, ppid, name, image_path, command_line, create_time,
+             dlls, sid, logon_id) in records:
             na = renderers.NotAvailableValue
             # Synthesize CAR `guid` from the offset (per-image unique; the store
             # namespaces it by source image). ParentPath by pid stays a HEURISTIC
             # until the store resolves parent_guid by offset (create-time ordered).
             guid = f"proc-{offset:x}"
+            user = sid_names.get(sid) if sid else None
+            if user is None and sid:
+                for regex, resolved in sid_res:
+                    if regex.search(sid):
+                        user = resolved
+                        break
             yield (0, (
                 offset, guid,
                 pid, ppid, name,
@@ -178,6 +283,9 @@ class Processes(interfaces.plugins.PluginInterface):
                 len(dlls),
                 ", ".join(dlls) if dlls else na(),
                 pid not in linked,
+                sid or na(),
+                user or na(),
+                f"0x{logon_id:x}" if logon_id is not None else na(),
             ))
 
     def run(self):
@@ -195,6 +303,9 @@ class Processes(interfaces.plugins.PluginInterface):
                 ("DllCount", int),
                 ("LoadedDlls", str),
                 ("Hidden", bool),
+                ("Sid", str),
+                ("User", str),
+                ("LogonId", str),
             ],
             self._generator(),
         )

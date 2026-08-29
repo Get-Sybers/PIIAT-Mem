@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "piiat-mem"
-version = "0.3.0"
+version = "0.4.0"
 description = "Put It In A Timeline (Memory) — a memory image to a MITRE CAR event store and timeline (Volatility 3, DFIR plugins, hardened container)."
 readme = "README.md"
 requires-python = ">=3.10"

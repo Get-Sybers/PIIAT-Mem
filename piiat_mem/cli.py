@@ -22,7 +22,7 @@ import os
 import sys
 import tempfile
 
-from . import __version__, enrich, normalize, runner, store, timeline
+from . import __version__, enrich, mappings, normalize, runner, store, timeline
 
 
 def _load_records(path: str) -> list[dict]:
@@ -52,10 +52,18 @@ def build_store(out_dir: str, source_image: str) -> "store.CarStore":
     plug_dir = os.path.join(out_dir, "plugins")
     events, context = [], []
     if os.path.isdir(plug_dir):
+        present = {n[:-len(".jsonl")] for n in os.listdir(plug_dir) if n.endswith(".jsonl")}
+        # a superseded built-in's JSONL is skipped when its piiat.* successor's
+        # output is present — see mappings.SUPERSEDES (prevents e.g. every logon
+        # double-counting under the old and new user_session identity schemes)
+        superseded = {old for new, old in mappings.SUPERSEDES.items()
+                      if new in present}
         for name in sorted(os.listdir(plug_dir)):
             if not name.endswith(".jsonl"):
                 continue
             plugin = name[:-len(".jsonl")]
+            if plugin in superseded:
+                continue
             records = _load_records(os.path.join(plug_dir, name))
             if not records:
                 continue

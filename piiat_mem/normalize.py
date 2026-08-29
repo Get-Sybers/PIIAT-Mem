@@ -15,7 +15,13 @@ import re
 
 from . import mappings
 
-_HIVE_USER = re.compile(r"(?i)(?:Documents and Settings|Users)\\([^\\]+)\\")
+# The profile owner from a user-hive FILE path. Covers real renderings:
+# \??\C:\Users\<name>\NTUSER.DAT, \Device\HarddiskVolumeN\Users\<name>\...,
+# Documents and Settings\<name>\ (XP), and Windows service profiles
+# (\Windows\ServiceProfiles\<name>\NTUSER.DAT — the account IS <name>).
+# SID-form hive paths (\REGISTRY\USER\S-1-5-21-...) carry no name here; they are
+# resolved in enrichment against the image's own ProfileList mapping.
+_HIVE_USER = re.compile(r"(?i)(?:Documents and Settings|Users|ServiceProfiles)\\([^\\]+)\\")
 # Volatility's "no time" sentinels (epoch zero renderings) — treated as no timestamp.
 _EPOCH_ZERO = re.compile(r"^(1601-01-01|1970-01-01|0001-01-01|1600-12-)")
 _PROTO = re.compile(r"(?i)^([a-z]+?)(v(4|6))?$")
@@ -101,6 +107,7 @@ def normalize(plugin: str, rec: dict) -> dict | None:
         "timestamp": None if m["ts"] is None else _clean_ts(rec.get(m["ts"])),
         "guid": _guid(m["guid"], obj, rec),
         "owning_pid": rec.get(m["owning_pid"]) if m.get("owning_pid") else None,
+        "owning_offset": rec.get(m["owning_offset"]) if m.get("owning_offset") else None,
         "parent_pid": rec.get(m["parent_pid"]) if m.get("parent_pid") else None,
         "owning_guid": None,        # set in enrichment (create-time-window PID join)
         "parent_guid": None,        # set in enrichment

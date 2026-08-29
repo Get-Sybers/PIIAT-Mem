@@ -43,20 +43,25 @@ See [docs/design/car-store.md](docs/design/car-store.md).
 
 ## What it runs
 
-Each plugin's records normalize to one CAR object:
+Each plugin's records normalize to one CAR object. The **`windows.piiat.*`
+family** covers every object memory can supply, and every piiat spoke emits
+`OwnerOffset` — the owning `_EPROCESS` address — so its process link is
+**definitive** (`link_confidence="definitive"`), not a reused-PID guess:
 
-| Plugin | CAR object | action | time |
-|---|---|---|---|
-| `windows.piiat.processes` | process | create | create time (psscan — finds unlinked/terminated too) |
-| `windows.thrdscan` | thread | create | thread create time |
-| `windows.dlllist` | module | load | module load time |
-| `windows.modules` | driver | load | — (store-only) |
-| `windows.netscan` / `netstat` (connections) | flow | start | socket created time |
-| `windows.netscan` / `netstat` (bound/LISTENING) | socket | listen | socket created time |
-| `windows.filescan` | file | — | — (store-only) |
-| `windows.piiat.registry` | registry | value_edit | key last-write time |
-| `windows.svcscan` | service | — | — (store-only) |
-| `windows.sessions` | user_session | login | session create time |
+| Plugin | CAR object | action | time | owner link |
+|---|---|---|---|---|
+| `windows.piiat.processes` | process | create | create time (psscan; + token Sid/User/LogonId) | — (the hub) |
+| `windows.piiat.threads` | thread | create | thread create time (+ stack fields) | definitive |
+| `windows.piiat.modules` | module | load | module load time | definitive |
+| `windows.piiat.network` (connections) | flow | start | socket created time | definitive |
+| `windows.piiat.network` (bound/LISTENING) | socket | listen | socket created time | definitive |
+| `windows.piiat.files` | file | — | — (store-only) | definitive (via handles — filescan can never say whose) |
+| `windows.piiat.registry` | registry | value_edit | key last-write time | user via hive path / ProfileList |
+| `windows.piiat.sessions` | user_session | login | earliest process create per logon **LUID** | definitive |
+| `windows.svcscan` | service | — | — (store-only) | heuristic (pid) |
+| `windows.modules` | driver | load | — (store-only) | — (kernel) |
+| `windows.filescan` | file | — | — (store-only; ownerless FILE_OBJECT scan) | none |
+| `windows.netstat` | flow / socket | start / listen | socket created time | heuristic (pid) |
 
 `windows.pslist` still runs (it flags `Hidden` processes by contrast) and
 `banners.Banners` / `windows.info` become **image-context metadata** in the

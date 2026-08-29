@@ -6,12 +6,20 @@ Implements docs/design/car-store.md §3 over the normalized events of ONE run:
   `ppid` and whose create time is <= the child's; the latest such wins. PID is
   reused by the OS, so this is a **heuristic** link (a definitive link needs the
   parent `_EPROCESS` pointer, which the plugin does not walk yet).
-- **spoke → owning process** (thread/module/flow/service/user_session rows that
-  carry an owning PID): same candidate rule against the spoke's timestamp. All
-  current spokes carry only a PID, so these links are **heuristic** too.
+- **spoke → owning process**: two tiers. The piiat.* family plugins emit the
+  owning `_EPROCESS` offset (`OwnerOffset`) — joining on it is **definitive**
+  (the kernel's own pointer, immune to PID reuse). Where only a PID is
+  available (built-in plugins, freed owners), the (pid, create-time window)
+  join applies and stays **heuristic**.
 - **inheritance**: a linked event inherits its process context — but only
   properties the object HAS in the CAR model, and only where its own value is
   null. A natively-supplied value is never overwritten.
+- **registry user via ProfileList**: a registry event on a SID-form user hive
+  (``\\REGISTRY\\USER\\S-1-5-...``) resolves `user` through the image's OWN
+  SOFTWARE-hive ProfileList mapping (SID -> ProfileImagePath basename) — the
+  same-image artefact join, never a guess. File-path hives
+  (``...\\Users\\<name>\\NTUSER.DAT``, ``ServiceProfiles\\<name>\\``) are
+  handled at normalize time.
 - **link_confidence**: "definitive" when the join key was an object identity
   (reserved for future offset-carrying spokes), "heuristic" for PID-window
   joins, null where no link was made.
@@ -31,9 +39,25 @@ Everything is grouped by `source_image`: joins never cross images.
 """
 from __future__ import annotations
 
+import ntpath
+import re
 from collections import defaultdict
 
 from . import carmodel
+
+# A user hive rendered in SID form: \REGISTRY\USER\S-1-5-21-...(-1001)[_Classes]
+_SID_HIVE = re.compile(r"(?i)\\REGISTRY\\USER\\(S-1-5-[\d-]+?)(_Classes)?$")
+# A ProfileList key: ...\Microsoft\Windows NT\CurrentVersion\ProfileList\<SID>
+_PROFILELIST_SID = re.compile(r"(?i)\\ProfileList\\(S-1-5-[\d-]+)$")
+# One canonical name per well-known account, applied store-wide so `user` means
+# the same thing in every table (plugins variously render S-1-5-18 as
+# "Local System" vs its "systemprofile" profile dir, and Volatility's table
+# flattens S-1-5-19/20 both to "NT Authority" — indistinguishable).
+_WELL_KNOWN_SIDS = {
+    "S-1-5-18": "Local System",
+    "S-1-5-19": "Local Service",
+    "S-1-5-20": "Network Service",
+}
 
 # Process-context properties a spoke may inherit (filtered per object by the
 # CAR model, filled only where null).
@@ -72,13 +96,46 @@ def _collapse_sessions(events: list[dict]) -> tuple[list[dict], dict]:
         if ev.get("owning_pid") is not None and ev.get("user"):
             user_by_pid.setdefault((ev.get("source_image"), int(ev["owning_pid"])), ev["user"])
         if ev.get("guid") is None:
-            keep.append(ev)  # no identity -> never collapse (same rule as _dedupe)
+            # No logon identity (unreadable token) -> this row asserts NO login;
+            # it is just one process's create time, and the process itself is
+            # already in the process table. Dropped, not timelined as a phantom.
             continue
         k = (ev.get("source_image"), ev.get("guid"))
         cur = sessions.get(k)
         if cur is None or ((ev.get("timestamp") or "~") < (cur.get("timestamp") or "~")):
             sessions[k] = ev
     return keep + list(sessions.values()), user_by_pid
+
+
+def _sid_user_index(events: list[dict]) -> dict:
+    """(image, SID) -> username, built from the image's OWN evidence: the
+    SOFTWARE hive's ProfileList keys (already in the registry plugin's default
+    target list) map each profile SID to its ProfileImagePath — whose basename
+    is the account (C:\\Users\\Steve -> Steve; ...\\ServiceProfiles\\LocalService
+    -> LocalService). Definitive per artefact, never guessed."""
+    idx = {}
+    for ev in events:
+        if ev["car_object"] != "registry" or ev.get("value") != "ProfileImagePath":
+            continue
+        m = _PROFILELIST_SID.search(str(ev.get("key") or ""))
+        if not m:
+            continue
+        name = ntpath.basename(str(ev.get("data") or "").rstrip("\\"))
+        if name:
+            idx[(ev.get("source_image"), m.group(1).upper())] = name
+    return idx
+
+
+def _fill_user_from_sid_hive(ev: dict, sid_users: dict):
+    """A registry event on a SID-form user hive (\\REGISTRY\\USER\\S-1-5-...)
+    gets its `user` resolved through the ProfileList index."""
+    if ev.get("user") not in (None, ""):
+        return
+    m = _SID_HIVE.search(str(ev.get("hive") or ""))
+    if m:
+        u = sid_users.get((ev.get("source_image"), m.group(1).upper()))
+        if u:
+            ev["user"] = u
 
 
 def _process_index(events: list[dict]) -> dict:
@@ -89,6 +146,20 @@ def _process_index(events: list[dict]) -> dict:
             idx[(ev.get("source_image"), int(ev["pid"]))].append(ev)
     for lst in idx.values():
         lst.sort(key=lambda e: e.get("timestamp") or "")
+    return idx
+
+
+def _process_offset_index(events: list[dict]) -> dict:
+    """(image, _EPROCESS offset) -> process event. The offset is the process's
+    kernel-object identity (kept in _native by the process plugin), so a spoke
+    carrying the owning offset joins DEFINITIVELY — no PID-reuse ambiguity."""
+    idx = {}
+    for ev in events:
+        if ev["car_object"] != "process":
+            continue
+        off = (ev.get("_native") or {}).get("Offset")
+        if off is not None:
+            idx[(ev.get("source_image"), int(off))] = ev
     return idx
 
 
@@ -118,10 +189,22 @@ def enrich(events: list[dict]) -> list[dict]:
     events, user_by_pid = _collapse_sessions(events)
     events = _dedupe(events)
     procs = _process_index(events)
+    procs_by_offset = _process_offset_index(events)
+    sid_users = _sid_user_index(events)
 
     for ev in events:
         image = ev.get("source_image")
         obj_fields = set(model[ev["car_object"]]["fields"])
+
+        # Canonical well-known account names, store-wide: `user` must mean the
+        # same string in every table for the same SID.
+        canonical = _WELL_KNOWN_SIDS.get(str(ev.get("sid") or ev.get("uid") or ""))
+        if canonical and "user" in obj_fields:
+            ev["user"] = canonical
+
+        if ev["car_object"] == "registry":
+            _fill_user_from_sid_hive(ev, sid_users)
+            continue
 
         if ev["car_object"] == "process":
             # user from the session table (per-pid, heuristic)
@@ -144,12 +227,21 @@ def enrich(events: list[dict]) -> list[dict]:
                             ev[dst] = parent[src]
             continue
 
-        # spoke -> owning process by (pid, create-time window) — heuristic
-        if ev.get("owning_pid") is not None:
+        # spoke -> owning process. Tier 1 (DEFINITIVE): the spoke carries the
+        # owning _EPROCESS offset — the kernel's own pointer, immune to PID
+        # reuse. Tier 2 (heuristic): the (pid, create-time window) join.
+        owner, confidence = None, None
+        if ev.get("owning_offset") is not None:
+            owner = procs_by_offset.get((image, int(ev["owning_offset"])))
+            if owner is not None:
+                confidence = "definitive"
+        if owner is None and ev.get("owning_pid") is not None:
             owner = _match(procs.get((image, int(ev["owning_pid"])), []),
                            ev.get("timestamp"))
             if owner is not None:
-                ev["owning_guid"] = owner.get("guid")
-                ev["link_confidence"] = "heuristic"
-                _inherit(ev, owner, obj_fields)
+                confidence = "heuristic"
+        if owner is not None:
+            ev["owning_guid"] = owner.get("guid")
+            ev["link_confidence"] = confidence
+            _inherit(ev, owner, obj_fields)
     return events

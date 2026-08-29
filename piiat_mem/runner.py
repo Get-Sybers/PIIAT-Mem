@@ -28,23 +28,27 @@ PLUGINS_DIR = os.path.join(REPO, "plugins")
 
 DEFAULT_IMAGE = "dfir/volatility:latest"
 
-# Plugins whose records carry a timestamp. (The timeline itself is now derived
-# from the CAR store — see cli.build_store; order preserved; the two
-# windows.piiat.* plugins are the custom ones in ./plugins/windows/piiat.)
+# Plugins whose records carry a timestamp. (The timeline itself is derived from
+# the CAR store — see cli.build_store.) The windows.piiat.* family (in
+# ./plugins/windows/piiat) supersedes the built-ins it improves on: every piiat
+# spoke emits OwnerOffset (the owning _EPROCESS address) so enrichment links
+# DEFINITIVELY instead of by reused PID. The superseded built-ins (thrdscan,
+# dlllist, netscan, sessions) still normalize if their JSONL is on disk.
 TIMELINE_PLUGINS = [
-    "windows.piiat.processes",        # process create times (psscan; unlinked too)
-    "windows.pslist",                 # process create times (active list)
-    "windows.dlllist",                # module load times
-    "windows.thrdscan",               # thread create times
-    "windows.netscan",                # socket created times
-    "windows.sessions",               # session create times
+    "windows.piiat.processes",        # process create times (psscan; + token Sid/User/LogonId)
+    "windows.pslist",                 # active list (context: the Hidden contrast)
+    "windows.piiat.modules",          # module load times + OwnerOffset
+    "windows.piiat.threads",          # thread create times + OwnerOffset + stacks
+    "windows.piiat.network",          # sockets/flows + OwnerOffset
+    "windows.netstat",                # kernel-walk flow source (second view)
+    "windows.piiat.sessions",         # token LUID logons (real CAR login_id)
     "windows.piiat.registry",         # registry key last-write times
 ]
 # Plugins with no per-record time — still dumped for completeness (not timelined).
 # banners.Banners is format-agnostic (works with no symbols) and, like
 # windows.info, becomes image-context metadata in the CAR store.
 CONTEXT_PLUGINS = ["banners.Banners", "windows.info", "windows.svcscan",
-                   "windows.filescan", "windows.modules"]
+                   "windows.filescan", "windows.piiat.files", "windows.modules"]
 # The full set this tool runs by default; exported (and surfaced by
 # ``piiat-mem --list-plugins``) so a consumer can name the plugins it wants.
 ALL_PLUGINS = TIMELINE_PLUGINS + CONTEXT_PLUGINS

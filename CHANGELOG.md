@@ -4,6 +4,56 @@ All notable changes are documented here, following
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-08-29
+
+### Added
+- **The windows.piiat.\* plugin family** (epic #1 follow-on): a custom plugin per
+  CAR object, each spoke emitting **`OwnerOffset`** — the owning `_EPROCESS`
+  address — so enrichment links process context **definitively** (the kernel's
+  own pointer, immune to PID reuse) instead of by the heuristic PID join:
+  - `windows.piiat.threads` — thread scan with OwnerOffset, kernel + user stack
+    fields (TEB via the rebuilt process layer), union-safe ExitTime (gated on the
+    TERMINATED flag).
+  - `windows.piiat.modules` — per-process PEB walk with OwnerOffset (Win10
+    address-mask normalization so offsets join psscan's identically).
+  - `windows.piiat.files` — handle-enumerated files WITH owners: the capability
+    filescan can never provide; one CAR file event per (FILE_OBJECT, process).
+  - `windows.piiat.network` — netscan with the owner `_EPROCESS` pointer
+    surfaced, surviving owner teardown on stale sockets.
+  - `windows.piiat.sessions` — per-process token identity: the AuthenticationId
+    **LUID** (the real CAR `login_id`, matching event-log TargetLogonId), SID and
+    resolved user; user_session identity is now the LUID, not the TS session
+    number.
+  - `windows.piiat.processes` gained token-derived `Sid`/`User`/`LogonId`
+    (native CAR process user/sid — no weak join needed).
+- Enrichment: a two-tier owner link — `link_confidence="definitive"` when the
+  spoke's OwnerOffset matches a process offset, falling back to the create-time
+  windowed PID join (`"heuristic"`).
+- Registry `user` resolution for SID-form hives (`\REGISTRY\USER\S-1-5-...`)
+  via the image's OWN SOFTWARE-hive ProfileList mapping (SID →
+  ProfileImagePath basename); hive FILE paths now also cover
+  `ServiceProfiles\<name>\` (service-account NTUSER.DAT).
+
+### Changed
+- Default plugin set: the piiat.* family supersedes windows.thrdscan /
+  dlllist / netscan / sessions. A superseded built-in's JSONL is now SKIPPED at
+  store-build when its successor's output is present (`mappings.SUPERSEDES`) —
+  without this, the old and new user_session identity schemes (TS session
+  number vs token LUID) would double-count every logon.
+- Adversarial-review fixes (4 dimensions × refuters over the family):
+  - every spoke plugin now normalizes `OwnerOffset` to psscan's offset
+    convention (mask-normalized virtual on Win10, PHYSICAL before that) — this
+    was modules-only, so on pre-Win10 images the definitive tier would have
+    silently degraded to PID heuristics for 4 of 5 spokes.
+  - well-known account names are canonicalized store-wide in enrichment
+    (S-1-5-18 → "Local System", S-1-5-19 → "Local Service", S-1-5-20 →
+    "Network Service") so `user` means the same string in every table.
+  - a session row whose token is unreadable (no LUID) no longer becomes a
+    phantom timelined login — it asserts nothing beyond the process row.
+  - thread `start_address`/`start_module` now always come from the SAME source
+    pair (Win32); mixing the Win32 address with the kernel path could assert an
+    injected address lives in a legitimate module.
+
 ## [0.3.0] - 2026-08-29
 
 ### Added

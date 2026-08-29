@@ -125,8 +125,10 @@ the reused PID:
 - flow `(protocol + 5-tuple)` · socket `(protocol, local endpoint, pid)` — NOT the
   scan offset: netscan's physical and netstat's virtual offsets aren't comparable,
   and dual-stack twins share one offset · driver `(image_path|module_name, base_address)`
-- registry `(hive, key, value, last_write)` · user_session `(login_id|user, time)`
-- file `(file_path)` · service `(name)`
+- registry `(hive, key, value, last_write)` · user_session `(token AuthenticationId LUID — the real login_id)`
+- file: filescan rows `(FILE_OBJECT offset)` — ownerless scan observations; piiat.files
+  rows `(FILE_OBJECT offset, observing PID)` — one event per (file, process-holding-a-handle)
+- service `(name)`
 
 ## 5. Store schema (SQLite, relational)
 
@@ -167,9 +169,14 @@ use the old names and need the same alignment (deferred — see the volatility l
 
 ---
 
-**Status:** implemented (v0.3.0). Phase 2 = `mappings.py` + `normalize.py` +
-`enrich.py` + `store.py`; Phase 3 = `timeline.py` (wide JSONL + per-object CSVs);
-wired in `cli.build_store`. §3's "definitive" tier for thread/module links (the
-owning-`_EPROCESS` offset emitted by custom plugins) remains future work — those
-links are currently produced by the create-time-window PID join and marked
-`heuristic`, as designed.
+**Status:** implemented (v0.3.0), and §3's **definitive tier is now real**
+(v0.4.0): the `windows.piiat.*` family — threads, modules, files, network,
+sessions, plus the token-upgraded processes — emits `OwnerOffset` (the owning
+`_EPROCESS` address) on every spoke, and enrichment links on it with
+`link_confidence="definitive"`, falling back to the create-time-window PID join
+(`heuristic`) only where no offset is available (built-ins, freed owners).
+Files now HAVE owners (handle enumeration — one CAR file event per
+(FILE_OBJECT, process), while `filescan` keeps contributing ownerless scan
+rows). `user_session` identity is the token AuthenticationId **LUID** (the real
+CAR `login_id`); process `user`/`sid` come natively from the token. Registry
+`user` on SID-form hives resolves through the image's own ProfileList mapping.
